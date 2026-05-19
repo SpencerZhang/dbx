@@ -3,7 +3,7 @@ type CellValue = string | number | boolean | null;
 export const DATA_GRID_COL_MIN_WIDTH = 60;
 export const DATA_GRID_COL_MAX_WIDTH = 400;
 export const DATA_GRID_CHAR_WIDTH = 8;
-export const DATA_GRID_HEADER_CONTROL_WIDTH = 64;
+export const DATA_GRID_HEADER_CONTROL_WIDTH = 80;
 export const DATA_GRID_CELL_PADDING = 28;
 export const DATA_GRID_SAMPLE_ROWS = 50;
 
