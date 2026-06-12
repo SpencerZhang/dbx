@@ -7,11 +7,8 @@ use futures::stream::Stream;
 use serde::Deserialize;
 
 use dbx_core::agent_events::AgentEvent;
-use dbx_core::agent_events::AgentEvent;
-use dbx_core::agent_loop::{run_agent_loop, AgentLoopContext};
 use dbx_core::agent_loop::{run_agent_loop, AgentLoopContext};
 use dbx_core::ai::{AiCompletionRequest, AiConfig, AiConversation, AiModelInfo, AiStreamChunk, AiTestConnectionResult};
-use dbx_core::models::connection::DatabaseType;
 use dbx_core::models::connection::DatabaseType;
 
 use crate::error::AppError;

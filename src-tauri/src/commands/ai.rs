@@ -1,4 +1,4 @@
-﻿use std::sync::Arc;
+use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 
 use super::connection::AppState;
