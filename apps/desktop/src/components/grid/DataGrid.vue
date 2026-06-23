@@ -2631,6 +2631,7 @@ const {
   dirtyRows,
   newRows,
   deletedRows,
+  pendingChangesVersion,
   pendingChangeCount,
   hasPendingChanges,
   transactionActive,
@@ -2712,7 +2713,7 @@ function closeSqlPreview() {
 }
 
 // Watch for edits — auto-refresh preview when panel is open
-watch([pendingChangeCount, dirtyRows, newRows, deletedRows], () => {
+watch([pendingChangeCount, pendingChangesVersion], () => {
   schedulePreviewRefresh();
 });
 
