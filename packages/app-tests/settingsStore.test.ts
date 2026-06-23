@@ -2,6 +2,7 @@ import { test } from "vitest";
 import assert from "node:assert/strict";
 import { createPinia, setActivePinia } from "pinia";
 import { DEFAULT_SQL_FORMATTER_SETTINGS } from "../../apps/desktop/src/lib/sqlFormatterConfig.ts";
+import { DEFAULT_TABLE_COLUMN_TEMPLATE_FIELDS } from "../../apps/desktop/src/lib/tableColumnTemplates.ts";
 import { AI_PROVIDER_PRESETS, DEFAULT_EDITOR_SETTINGS, normalizeAiConfig, normalizeEditorSettings, useSettingsStore } from "../../apps/desktop/src/stores/settingsStore.ts";
 
 const OLD_FONT_SIZE_KEY = "dbx-query-editor-font-size";
@@ -163,6 +164,22 @@ test("normalizes table structure editor density", () => {
   assert.equal(normalizeEditorSettings({ structureEditorDensity: "standard" }).structureEditorDensity, "standard");
   assert.equal(normalizeEditorSettings({ structureEditorDensity: "comfortable" }).structureEditorDensity, "comfortable");
   assert.equal(normalizeEditorSettings({ structureEditorDensity: "invalid" as any }).structureEditorDensity, "compact");
+});
+
+test("normalizes table column template fields", () => {
+  assert.deepEqual(DEFAULT_EDITOR_SETTINGS.tableColumnTemplateFields, DEFAULT_TABLE_COLUMN_TEMPLATE_FIELDS);
+  assert.deepEqual(DEFAULT_EDITOR_SETTINGS.tableColumnTemplateFields, []);
+  assert.deepEqual(normalizeEditorSettings({}).tableColumnTemplateFields, DEFAULT_TABLE_COLUMN_TEMPLATE_FIELDS);
+  const normalizedTemplateFields = normalizeEditorSettings({ tableColumnTemplateFields: [" tenant_id | mysql:bigint ", "request_id | mysql:varchar(64)", "TENANT_ID | mysql:bigint", ""] } as any).tableColumnTemplateFields;
+  assert.equal(
+    normalizedTemplateFields.find((field) => field.startsWith("tenant_id")),
+    "tenant_id | mysql:bigint",
+  );
+  assert.equal(
+    normalizedTemplateFields.find((field) => field.startsWith("request_id")),
+    "request_id | mysql:varchar(64)",
+  );
+  assert.deepEqual(normalizeEditorSettings({ tableColumnTemplateFields: [] } as any).tableColumnTemplateFields, DEFAULT_TABLE_COLUMN_TEMPLATE_FIELDS);
 });
 
 test("normalizes grid drawer widths", () => {

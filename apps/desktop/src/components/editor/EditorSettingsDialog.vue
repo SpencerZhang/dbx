@@ -3,7 +3,7 @@ import { ref, watch, shallowRef, computed, onMounted, onUnmounted, nextTick } fr
 import type { Ref } from "vue";
 import type { EditorView as EditorViewType } from "@codemirror/view";
 import { useI18n } from "vue-i18n";
-import { AlertTriangle, CheckCircle2, CircleHelp, Cloud, Copy, Download, ExternalLink, Loader2, Moon, PackageSearch, Pencil, RefreshCw, RotateCcw, Settings, Sun, SunMoon, Terminal, Trash2, Upload, X } from "@lucide/vue";
+import { AlertTriangle, CheckCircle2, CircleHelp, Cloud, Copy, Download, ExternalLink, GripVertical, Loader2, Moon, PackageSearch, Pencil, RefreshCw, RotateCcw, Settings, Sun, SunMoon, Terminal, Trash2, Upload, X } from "@lucide/vue";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -62,7 +62,9 @@ import { eventToShortcut } from "@/lib/keyboardShortcuts";
 import { SHORTCUT_DEFINITIONS, findShortcutConflict, normalizeShortcutSettings, type ShortcutActionId } from "@/lib/shortcutRegistry";
 import { normalizeSidebarHiddenTablePrefixes } from "@/lib/sidebarTableNameDisplay";
 import { normalizeSqlFormatterSettings, type SqlFormatterSettings } from "@/lib/sqlFormatterConfig";
-import type { SqlSnippet } from "@/types/database";
+import { EMPTY_TABLE_COLUMN_TEMPLATE_DATA_TYPE, parseTableColumnTemplateFields, TABLE_COLUMN_TEMPLATE_DATABASE_TYPES } from "@/lib/tableColumnTemplates";
+import { combineDataTypeForDatabase, getDataTypeOptions, getDefaultLengthForType, isDataTypeLengthDisabled, splitDataType } from "@/lib/tableStructureEditorState";
+import type { DatabaseType, SqlSnippet } from "@/types/database";
 import { uuid } from "@/lib/utils";
 import { DEFAULT_SQL_SNIPPETS } from "@/lib/sqlCompletion";
 import AiProviderLogo from "@/components/icons/AiProviderLogo.vue";
@@ -86,12 +88,83 @@ let pendingSystemFonts: Promise<string[]> | null = null;
 const props = defineProps<{
   open: boolean;
   initialTab?: string;
+  initialSection?: string;
   appVersion?: string;
 }>();
 
 const emit = defineEmits<{
   "update:open": [value: boolean];
 }>();
+
+interface TableColumnTemplateOverrideRow {
+  id: string;
+  databaseType: DatabaseType;
+  dataType: string;
+}
+
+interface TableColumnTemplateGridRow {
+  id: string;
+  name: string;
+  defaultValue: string;
+  required: boolean;
+  comment: string;
+  overrides: TableColumnTemplateOverrideRow[];
+}
+
+function tableColumnTemplateRowsFromSettings(lines: readonly string[]): TableColumnTemplateGridRow[] {
+  return parseTableColumnTemplateFields([...lines]).map((field) => ({
+    id: uuid(),
+    name: field.name,
+    defaultValue: field.defaultValue ?? "",
+    required: !(field.isNullable ?? false),
+    comment: field.comment ?? "",
+    overrides: Object.entries(field.dataTypesByDatabase).map(([databaseType, dataType]) => ({
+      id: uuid(),
+      databaseType: databaseType as DatabaseType,
+      dataType: dataType === EMPTY_TABLE_COLUMN_TEMPLATE_DATA_TYPE ? "" : dataType,
+    })),
+  }));
+}
+
+function tableColumnTemplateRowsToSettings(rows: readonly TableColumnTemplateGridRow[]): string[] {
+  const seenNames = new Set<string>();
+  const settings: string[] = [];
+  for (const row of rows) {
+    const name = row.name.trim();
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (seenNames.has(key)) continue;
+    seenNames.add(key);
+
+    const parts = [name];
+
+    const seenDatabaseTypes = new Set<DatabaseType>();
+    for (const override of row.overrides) {
+      const dataType = override.dataType.trim();
+      if (seenDatabaseTypes.has(override.databaseType)) continue;
+      seenDatabaseTypes.add(override.databaseType);
+      parts.push(`${override.databaseType}:${dataType || EMPTY_TABLE_COLUMN_TEMPLATE_DATA_TYPE}`);
+    }
+    if (!row.required) parts.push("required:false");
+    const defaultValue = row.defaultValue.trim();
+    if (defaultValue) parts.push(`default:${defaultValue}`);
+    const comment = row.comment.trim();
+    if (comment) parts.push(`comment:${comment}`);
+    settings.push(parts.join(" | "));
+  }
+  return settings;
+}
+
+function createEmptyTableColumnTemplateRow(): TableColumnTemplateGridRow {
+  return {
+    id: uuid(),
+    name: "",
+    defaultValue: "",
+    required: true,
+    comment: "",
+    overrides: [],
+  };
+}
 
 // Local edit state
 const editFontFamily = ref(settingsStore.editorSettings.fontFamily);
@@ -119,6 +192,11 @@ const editShowColumnTypesInHeader = ref(settingsStore.editorSettings.showColumnT
 const editCompactColumnHeaderActions = ref(settingsStore.editorSettings.compactColumnHeaderActions);
 const editInfiniteScroll = ref(settingsStore.editorSettings.infiniteScroll);
 const editInfiniteScrollMaxRows = ref(settingsStore.editorSettings.infiniteScrollMaxRows);
+const editTableColumnTemplateRows = ref<TableColumnTemplateGridRow[]>(tableColumnTemplateRowsFromSettings(settingsStore.editorSettings.tableColumnTemplateFields));
+const editTableColumnTemplateDatabaseType = ref<DatabaseType>(TABLE_COLUMN_TEMPLATE_DATABASE_TYPES[0] ?? "mysql");
+const tableColumnTemplateSectionRef = ref<HTMLElement | null>(null);
+const draggedTableColumnTemplateRowId = ref<string | null>(null);
+let tableColumnTemplatePointerDragCleanup: (() => void) | null = null;
 const editRedisScanPageSize = ref(settingsStore.editorSettings.redisScanPageSize);
 const editShortcuts = ref(normalizeShortcutSettings(settingsStore.editorSettings.shortcuts));
 const editSqlFormatter = ref<SqlFormatterSettings>(normalizeSqlFormatterSettings(settingsStore.editorSettings.sqlFormatter));
@@ -153,6 +231,13 @@ const disconnectTabHandlingModeDescriptionKey = computed(() => {
 
   return "disconnectTabHandlingModeCloseTabsDescription";
 });
+const normalizedEditTableColumnTemplateFields = computed(() => tableColumnTemplateRowsToSettings(editTableColumnTemplateRows.value));
+const visibleTableColumnTemplateRows = computed(() =>
+  editTableColumnTemplateRows.value.filter((row) => {
+    if (row.overrides.length === 0) return true;
+    return row.overrides.some((override) => override.databaseType === editTableColumnTemplateDatabaseType.value);
+  }),
+);
 
 // --- Snippet state ---
 const editSnippets = ref<SqlSnippet[]>(settingsStore.editorSettings.snippets.map((s) => ({ ...s })));
@@ -378,6 +463,7 @@ watch(
       editCompactColumnHeaderActions.value = settingsStore.editorSettings.compactColumnHeaderActions;
       editInfiniteScroll.value = settingsStore.editorSettings.infiniteScroll;
       editInfiniteScrollMaxRows.value = settingsStore.editorSettings.infiniteScrollMaxRows;
+      editTableColumnTemplateRows.value = tableColumnTemplateRowsFromSettings(settingsStore.editorSettings.tableColumnTemplateFields);
       editRedisScanPageSize.value = settingsStore.editorSettings.redisScanPageSize;
       editShortcuts.value = normalizeShortcutSettings(settingsStore.editorSettings.shortcuts);
       editSqlFormatter.value = normalizeSqlFormatterSettings(settingsStore.editorSettings.sqlFormatter);
@@ -436,6 +522,7 @@ function hasChanges(): boolean {
     editCompactColumnHeaderActions.value !== settingsStore.editorSettings.compactColumnHeaderActions ||
     editInfiniteScroll.value !== settingsStore.editorSettings.infiniteScroll ||
     editInfiniteScrollMaxRows.value !== settingsStore.editorSettings.infiniteScrollMaxRows ||
+    JSON.stringify(normalizedEditTableColumnTemplateFields.value) !== JSON.stringify(settingsStore.editorSettings.tableColumnTemplateFields) ||
     editRedisScanPageSize.value !== settingsStore.editorSettings.redisScanPageSize ||
     JSON.stringify(editShortcuts.value) !== JSON.stringify(settingsStore.editorSettings.shortcuts) ||
     JSON.stringify(editSqlFormatter.value) !== JSON.stringify(normalizeSqlFormatterSettings(settingsStore.editorSettings.sqlFormatter)) ||
@@ -474,6 +561,7 @@ async function persistSettings() {
     compactColumnHeaderActions: editCompactColumnHeaderActions.value,
     infiniteScroll: editInfiniteScroll.value,
     infiniteScrollMaxRows: editInfiniteScrollMaxRows.value,
+    tableColumnTemplateFields: normalizedEditTableColumnTemplateFields.value,
     redisScanPageSize: editRedisScanPageSize.value,
     shortcuts: editShortcuts.value,
     sqlFormatter: normalizeSqlFormatterSettings(editSqlFormatter.value),
@@ -553,6 +641,7 @@ function resetDefaultsForTab(tab: SettingsCategory) {
     editCompactColumnHeaderActions.value = DEFAULT_EDITOR_SETTINGS.compactColumnHeaderActions;
     editInfiniteScroll.value = DEFAULT_EDITOR_SETTINGS.infiniteScroll;
     editInfiniteScrollMaxRows.value = DEFAULT_EDITOR_SETTINGS.infiniteScrollMaxRows;
+    editTableColumnTemplateRows.value = tableColumnTemplateRowsFromSettings(DEFAULT_EDITOR_SETTINGS.tableColumnTemplateFields);
     editExportBatchSize.value = DEFAULT_EDITOR_SETTINGS.exportBatchSize;
   } else if (tab === "redis") {
     editRedisScanPageSize.value = DEFAULT_EDITOR_SETTINGS.redisScanPageSize;
@@ -586,6 +675,7 @@ function resetAllDefaults() {
   editCompactColumnHeaderActions.value = DEFAULT_EDITOR_SETTINGS.compactColumnHeaderActions;
   editInfiniteScroll.value = DEFAULT_EDITOR_SETTINGS.infiniteScroll;
   editInfiniteScrollMaxRows.value = DEFAULT_EDITOR_SETTINGS.infiniteScrollMaxRows;
+  editTableColumnTemplateRows.value = tableColumnTemplateRowsFromSettings(DEFAULT_EDITOR_SETTINGS.tableColumnTemplateFields);
   editRedisScanPageSize.value = DEFAULT_EDITOR_SETTINGS.redisScanPageSize;
   editShortcuts.value = normalizeShortcutSettings(DEFAULT_EDITOR_SETTINGS.shortcuts);
   editSqlFormatter.value = normalizeSqlFormatterSettings(DEFAULT_EDITOR_SETTINGS.sqlFormatter);
@@ -602,6 +692,130 @@ function resetAllDefaults() {
   editExportBatchSize.value = DEFAULT_EDITOR_SETTINGS.exportBatchSize;
   editToolbarItems.value = { ...DEFAULT_EDITOR_SETTINGS.toolbarItems };
   editSnippets.value = DEFAULT_SQL_SNIPPETS.map((s) => ({ ...s }));
+}
+
+function addTableColumnTemplateRow() {
+  const row = createEmptyTableColumnTemplateRow();
+  row.overrides.push({
+    id: uuid(),
+    databaseType: editTableColumnTemplateDatabaseType.value,
+    dataType: "",
+  });
+  editTableColumnTemplateRows.value.push(row);
+}
+
+function removeTableColumnTemplateRow(id: string) {
+  const row = editTableColumnTemplateRows.value.find((item) => item.id === id);
+  if (!row) return;
+  if (row.overrides.some((override) => override.databaseType === editTableColumnTemplateDatabaseType.value)) {
+    row.overrides = row.overrides.filter((override) => override.databaseType !== editTableColumnTemplateDatabaseType.value);
+    if (row.overrides.length > 0) return;
+  }
+  editTableColumnTemplateRows.value = editTableColumnTemplateRows.value.filter((item) => item.id !== id);
+}
+
+function moveTableColumnTemplateRow(sourceId: string, targetId: string, placement: "before" | "after") {
+  if (!sourceId || sourceId === targetId) return;
+  const rows = [...editTableColumnTemplateRows.value];
+  const sourceIndex = rows.findIndex((row) => row.id === sourceId);
+  const targetIndex = rows.findIndex((row) => row.id === targetId);
+  if (sourceIndex === -1 || targetIndex === -1) return;
+  const [source] = rows.splice(sourceIndex, 1);
+  if (!source) return;
+  const nextTargetIndex = rows.findIndex((row) => row.id === targetId);
+  const insertIndex = placement === "after" ? nextTargetIndex + 1 : nextTargetIndex;
+  rows.splice(nextTargetIndex === -1 ? rows.length : insertIndex, 0, source);
+  editTableColumnTemplateRows.value = rows;
+}
+
+function cleanupTableColumnTemplatePointerDrag() {
+  tableColumnTemplatePointerDragCleanup?.();
+  tableColumnTemplatePointerDragCleanup = null;
+  draggedTableColumnTemplateRowId.value = null;
+  document.body.style.cursor = "";
+  document.body.style.userSelect = "";
+}
+
+function startTableColumnTemplateRowDrag(id: string, event: PointerEvent) {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  cleanupTableColumnTemplatePointerDrag();
+  draggedTableColumnTemplateRowId.value = id;
+  document.body.style.cursor = "grabbing";
+  document.body.style.userSelect = "none";
+
+  const onPointerMove = (moveEvent: PointerEvent) => {
+    const sourceId = draggedTableColumnTemplateRowId.value;
+    if (!sourceId) return;
+    const targetRow = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY)?.closest<HTMLElement>("[data-table-column-template-row-id]");
+    const targetId = targetRow?.dataset.tableColumnTemplateRowId;
+    if (!targetRow || !targetId || targetId === sourceId) return;
+    const rect = targetRow.getBoundingClientRect();
+    moveTableColumnTemplateRow(sourceId, targetId, moveEvent.clientY > rect.top + rect.height / 2 ? "after" : "before");
+  };
+  const onPointerUp = () => cleanupTableColumnTemplatePointerDrag();
+
+  window.addEventListener("pointermove", onPointerMove);
+  window.addEventListener("pointerup", onPointerUp, { once: true });
+  window.addEventListener("pointercancel", onPointerUp, { once: true });
+  tableColumnTemplatePointerDragCleanup = () => {
+    window.removeEventListener("pointermove", onPointerMove);
+    window.removeEventListener("pointerup", onPointerUp);
+    window.removeEventListener("pointercancel", onPointerUp);
+  };
+}
+
+function tableColumnTemplateTypeOptions(databaseType: DatabaseType): string[] {
+  return getDataTypeOptions(databaseType);
+}
+
+function tableColumnTemplateDataTypeForSelectedDatabase(row: TableColumnTemplateGridRow): string {
+  return row.overrides.find((override) => override.databaseType === editTableColumnTemplateDatabaseType.value)?.dataType ?? "";
+}
+
+function tableColumnTemplateBaseTypeForSelectedDatabase(row: TableColumnTemplateGridRow): string {
+  return splitDataType(tableColumnTemplateDataTypeForSelectedDatabase(row)).baseType;
+}
+
+function tableColumnTemplateLengthForSelectedDatabase(row: TableColumnTemplateGridRow): string {
+  return splitDataType(tableColumnTemplateDataTypeForSelectedDatabase(row)).params;
+}
+
+function setTableColumnTemplateDataTypeForSelectedDatabase(row: TableColumnTemplateGridRow, value: string) {
+  const dataType = value.trim();
+  const databaseType = editTableColumnTemplateDatabaseType.value;
+  const existing = row.overrides.find((override) => override.databaseType === databaseType);
+  if (!dataType) {
+    row.overrides = row.overrides.filter((override) => override.databaseType !== databaseType);
+    return;
+  }
+  if (existing) {
+    existing.dataType = dataType;
+  } else {
+    row.overrides.push({ id: uuid(), databaseType, dataType });
+  }
+}
+
+function setTableColumnTemplateBaseTypeForSelectedDatabase(row: TableColumnTemplateGridRow, value: string) {
+  const baseType = value.trim();
+  if (!baseType) {
+    setTableColumnTemplateDataTypeForSelectedDatabase(row, "");
+    return;
+  }
+  const databaseType = editTableColumnTemplateDatabaseType.value;
+  setTableColumnTemplateDataTypeForSelectedDatabase(row, combineDataTypeForDatabase(databaseType, baseType, getDefaultLengthForType(databaseType, baseType)));
+}
+
+function setTableColumnTemplateLengthForSelectedDatabase(row: TableColumnTemplateGridRow, value: string) {
+  const databaseType = editTableColumnTemplateDatabaseType.value;
+  const baseType = tableColumnTemplateBaseTypeForSelectedDatabase(row);
+  if (!baseType || isDataTypeLengthDisabled(databaseType, baseType)) return;
+  setTableColumnTemplateDataTypeForSelectedDatabase(row, combineDataTypeForDatabase(databaseType, baseType, value));
+}
+
+function isTableColumnTemplateLengthDisabled(row: TableColumnTemplateGridRow): boolean {
+  const baseType = tableColumnTemplateBaseTypeForSelectedDatabase(row);
+  return !baseType || isDataTypeLengthDisabled(editTableColumnTemplateDatabaseType.value, baseType);
 }
 
 function onExecuteModeChange(v: any) {
@@ -1109,6 +1323,13 @@ const passwordMessage = ref("");
 const passwordError = ref(false);
 const changingPassword = ref(false);
 
+async function scrollToInitialSettingsSection() {
+  await nextTick();
+  if (props.initialSection === "tableColumnTemplates") {
+    tableColumnTemplateSectionRef.value?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }
+}
+
 watch(
   () => props.open,
   async (open) => {
@@ -1130,9 +1351,17 @@ watch(
       syncAiEditState();
       if (!isWeb && activeSettingsTab.value === "mcp") void refreshMcpStatus();
       if (!isWeb && activeSettingsTab.value === "ai" && aiIsCodexCli.value) void ensureCodexMcpStatus();
+      await scrollToInitialSettingsSection();
     }
   },
   { immediate: true },
+);
+
+watch(
+  () => props.initialSection,
+  () => {
+    if (props.open) void scrollToInitialSettingsSection();
+  },
 );
 
 watch([webdavEndpoint, webdavUsername], () => {
@@ -1168,6 +1397,7 @@ onUnmounted(() => {
     window.clearInterval(webdavAutoUploadTimer);
     webdavAutoUploadTimer = undefined;
   }
+  cleanupTableColumnTemplatePointerDrag();
   cleanupTruncationObservers();
 });
 
@@ -2266,6 +2496,98 @@ watch(
                       <option value="10000" />
                     </datalist>
                     <span class="text-xs text-muted-foreground">{{ t("settings.exportBatchSizeDescription") }}</span>
+                  </div>
+                </div>
+              </div>
+
+              <Separator />
+
+              <div class="space-y-3">
+                <div class="text-sm font-medium text-muted-foreground">{{ t("settings.tableStructureSection") }}</div>
+                <div ref="tableColumnTemplateSectionRef" class="space-y-2 rounded-md border bg-muted/20 px-3 py-2">
+                  <div class="flex items-start justify-between gap-3">
+                    <div class="space-y-1">
+                      <Label>{{ t("settings.tableColumnTemplateFields") }}</Label>
+                      <p class="text-xs text-muted-foreground">{{ t("settings.tableColumnTemplateFieldsDescription") }}</p>
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <Select v-model="editTableColumnTemplateDatabaseType">
+                        <SelectTrigger class="h-8 w-44 px-2 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent class="max-h-72">
+                          <SelectItem v-for="dbType in TABLE_COLUMN_TEMPLATE_DATABASE_TYPES" :key="dbType" :value="dbType">
+                            {{ dbType }}
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <Button type="button" size="sm" variant="outline" @click="addTableColumnTemplateRow">
+                        {{ t("settings.tableColumnTemplateAdd") }}
+                      </Button>
+                    </div>
+                  </div>
+                  <div class="overflow-x-auto rounded-md border bg-background">
+                    <table class="w-full min-w-[900px] border-separate border-spacing-0 text-xs">
+                      <thead class="bg-muted/50 text-muted-foreground">
+                        <tr>
+                          <th class="w-8 border-b px-2 py-1.5" />
+                          <th class="border-b px-2 py-1.5 text-left font-medium">{{ t("settings.tableColumnTemplateColumn") }}</th>
+                          <th class="border-b px-2 py-1.5 text-left font-medium">{{ t("settings.tableColumnTemplateType") }}</th>
+                          <th class="border-b px-2 py-1.5 text-left font-medium">{{ t("settings.tableColumnTemplateLength") }}</th>
+                          <th class="border-b px-2 py-1.5 text-left font-medium">{{ t("settings.tableColumnTemplateDefault") }}</th>
+                          <th class="border-b px-2 py-1.5 text-left font-medium">{{ t("settings.tableColumnTemplateRequired") }}</th>
+                          <th class="border-b px-2 py-1.5 text-left font-medium">{{ t("settings.tableColumnTemplateComment") }}</th>
+                          <th class="w-10 border-b px-2 py-1.5" />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="row in visibleTableColumnTemplateRows" :key="row.id" :data-table-column-template-row-id="row.id" :class="draggedTableColumnTemplateRowId === row.id ? 'opacity-60' : ''">
+                          <td class="border-b px-2 py-1.5 align-middle">
+                            <button
+                              type="button"
+                              class="flex h-7 w-6 cursor-grab touch-none items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground active:cursor-grabbing"
+                              :aria-label="t('settings.tableColumnTemplateDragHandle')"
+                              @pointerdown="startTableColumnTemplateRowDrag(row.id, $event)"
+                            >
+                              <GripVertical class="h-3.5 w-3.5" />
+                            </button>
+                          </td>
+                          <td class="border-b px-2 py-1.5">
+                            <Input v-model="row.name" class="h-7 px-2 text-xs" />
+                          </td>
+                          <td class="border-b px-2 py-1.5">
+                            <SearchableSelect
+                              :model-value="tableColumnTemplateBaseTypeForSelectedDatabase(row)"
+                              :options="tableColumnTemplateTypeOptions(editTableColumnTemplateDatabaseType)"
+                              :placeholder="t('settings.tableColumnTemplateNoPresetType')"
+                              :search-placeholder="t('structureEditor.typePlaceholder')"
+                              :empty-text="t('structureEditor.noMatchingType')"
+                              :loading-text="t('common.loading')"
+                              :allow-custom="true"
+                              :trigger-class="['h-7 w-full px-2 font-mono text-xs']"
+                              @update:model-value="setTableColumnTemplateBaseTypeForSelectedDatabase(row, $event)"
+                            />
+                          </td>
+                          <td class="border-b px-2 py-1.5">
+                            <Input :model-value="tableColumnTemplateLengthForSelectedDatabase(row)" class="h-7 w-28 px-2 font-mono text-xs" :disabled="isTableColumnTemplateLengthDisabled(row)" @update:model-value="setTableColumnTemplateLengthForSelectedDatabase(row, String($event))" />
+                          </td>
+                          <td class="border-b px-2 py-1.5">
+                            <Input v-model="row.defaultValue" class="h-7 px-2 font-mono text-xs" />
+                          </td>
+                          <td class="border-b px-2 py-1.5">
+                            <Switch v-model="row.required" />
+                          </td>
+                          <td class="border-b px-2 py-1.5">
+                            <Input v-model="row.comment" class="h-7 px-2 text-xs" />
+                          </td>
+                          <td class="border-b px-2 py-1.5 text-right">
+                            <Button type="button" variant="ghost" size="icon" class="h-7 w-7" @click="removeTableColumnTemplateRow(row.id)">
+                              <X class="h-3.5 w-3.5" />
+                            </Button>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
                   </div>
                 </div>
               </div>

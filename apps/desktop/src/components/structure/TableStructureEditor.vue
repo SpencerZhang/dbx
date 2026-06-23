@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { AlertTriangle, Check, ChevronDown, ChevronUp, Copy, Database, Info, KeyRound, Loader2, Maximize2, Plus, RefreshCw, Save, SlidersHorizontal, Trash2, X } from "@lucide/vue";
+import { AlertTriangle, Check, ChevronDown, ChevronUp, Copy, Database, Info, KeyRound, Loader2, Maximize2, Plus, RefreshCw, Save, Settings, SlidersHorizontal, Trash2, X } from "@lucide/vue";
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -22,6 +22,7 @@ import { type SqlHighlighter, createShikiSqlHighlighter } from "@/lib/sqlHighlig
 import { copyToClipboard } from "@/lib/clipboard";
 import { queryTimeoutSecsForConnection } from "@/lib/queryTimeout";
 import { type EditableStructureColumn, type EditableStructureForeignKey, type EditableStructureIndex, type EditableStructureTrigger } from "@/lib/tableStructureEditorSql";
+import { PRESET_FIELDS_TEMPLATE_ID, createTableColumnTemplateDrafts } from "@/lib/tableColumnTemplates";
 import { getTableMetadataCapabilities } from "@/lib/tableMetadataCapabilities";
 import { canAddTableStructureColumn, getTableStructureCapabilities } from "@/lib/tableStructureCapabilities";
 import { connectionObjectTreeQuerySchema, tableStructureDatabaseTypeForConnection } from "@/lib/jdbcDialect";
@@ -80,6 +81,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   saved: [commentChanged: boolean];
   close: [];
+  openSettings: [initialTab?: string, initialSection?: string];
 }>();
 
 const activeTab = ref("columns");
@@ -822,6 +824,20 @@ async function addColumn() {
   input?.select();
 }
 
+function applyColumnTemplate(templateId: string) {
+  if (!canAddColumn.value) return;
+  activeTab.value = "columns";
+  const templateColumns = createTableColumnTemplateDrafts({
+    templateId,
+    databaseType: databaseType.value,
+    columnNames: settingsStore.editorSettings.tableColumnTemplateFields,
+    existingColumnNames: columns.value.map((column) => column.name),
+    createId: uuid,
+  });
+  if (!templateColumns.length) return;
+  columns.value.push(...templateColumns);
+}
+
 function removeNewColumn(column: EditableStructureColumn) {
   columns.value = columns.value.filter((item) => item.id !== column.id);
 }
@@ -1354,6 +1370,18 @@ watch(activeTab, (tab) => {
                 <Plus :class="structureIconClass" />
                 {{ t("structureEditor.addColumn") }}
               </Button>
+              <Button v-if="isCreateMode && activeTab === 'columns'" size="sm" variant="outline" :class="structureToolbarButtonClass" :disabled="!canAddColumn" @click="applyColumnTemplate(PRESET_FIELDS_TEMPLATE_ID)">
+                <Copy :class="structureIconClass" />
+                {{ t("structureEditor.columnTemplates") }}
+              </Button>
+              <Tooltip v-if="isCreateMode && activeTab === 'columns'">
+                <TooltipTrigger as-child>
+                  <Button size="sm" variant="ghost" :class="structureToolbarButtonClass" :disabled="!canAddColumn" :aria-label="t('structureEditor.configureColumnTemplates')" @click="emit('openSettings', 'data', 'tableColumnTemplates')">
+                    <Settings :class="structureIconClass" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{{ t("structureEditor.configureColumnTemplates") }}</TooltipContent>
+              </Tooltip>
               <Button v-if="activeTab === 'indexes'" size="sm" :class="structureToolbarButtonClass" :disabled="!structureCapabilities.createIndex || indexesLoading" @click="addIndex">
                 <Plus :class="structureIconClass" />
                 {{ t("structureEditor.addIndex") }}

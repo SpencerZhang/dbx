@@ -10,6 +10,7 @@ import type { SidebarActivation } from "@/lib/treeNodeClick";
 import type { SqlSnippet } from "@/types/database";
 import { DEFAULT_SQL_SNIPPETS } from "@/lib/sqlCompletion";
 import { setDebugLoggingEnabled } from "@/lib/debugLog";
+import { DEFAULT_TABLE_COLUMN_TEMPLATE_FIELDS, normalizeTableColumnTemplateFields } from "@/lib/tableColumnTemplates";
 
 export type AiProvider = "claude" | "openai" | "gemini" | "deepseek" | "qwen" | "ollama" | "openai-compatible" | "codex-cli" | "custom";
 export type AiApiStyle = "completions" | "responses";
@@ -339,6 +340,7 @@ export interface EditorSettings {
   columnFormatters: Record<string, ColumnFormatterConfig>;
   customColumnFormatters: Record<string, CustomColumnFormatterConfig>;
   snippets: SqlSnippet[];
+  tableColumnTemplateFields: string[];
   exportBatchSize: number;
   toolbarItems: ToolbarItems;
 }
@@ -438,6 +440,7 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   columnFormatters: {},
   customColumnFormatters: {},
   snippets: DEFAULT_SQL_SNIPPETS,
+  tableColumnTemplateFields: [...DEFAULT_TABLE_COLUMN_TEMPLATE_FIELDS],
   exportBatchSize: 10000,
   toolbarItems: { ...DEFAULT_TOOLBAR_ITEMS },
 };
@@ -602,6 +605,7 @@ export function normalizeEditorSettings(settings: Partial<EditorSettings>, exist
     columnFormatters: normalizeColumnFormatters(settings.columnFormatters),
     customColumnFormatters: normalizeCustomColumnFormatters(settings.customColumnFormatters),
     snippets: normalizeSqlSnippets(settings.snippets, existing?.snippets),
+    tableColumnTemplateFields: normalizeTableColumnTemplateFields(settings.tableColumnTemplateFields),
     exportBatchSize: typeof settings.exportBatchSize === "number" && settings.exportBatchSize >= 100 && settings.exportBatchSize <= 100000 ? Math.round(settings.exportBatchSize) : DEFAULT_EDITOR_SETTINGS.exportBatchSize,
     toolbarItems: normalizeToolbarItems(settings.toolbarItems),
   };
@@ -762,6 +766,7 @@ export const useSettingsStore = defineStore("settings", () => {
     if (partial.columnFormatters !== undefined) editorSettings.value.columnFormatters = partial.columnFormatters;
     if (partial.customColumnFormatters !== undefined) editorSettings.value.customColumnFormatters = partial.customColumnFormatters;
     if (partial.snippets !== undefined) editorSettings.value.snippets = normalizeSqlSnippets(partial.snippets);
+    if (partial.tableColumnTemplateFields !== undefined) editorSettings.value.tableColumnTemplateFields = normalizeTableColumnTemplateFields(partial.tableColumnTemplateFields);
     if (partial.exportBatchSize !== undefined) editorSettings.value.exportBatchSize = Math.min(100000, Math.max(100, Math.round(partial.exportBatchSize)));
     if (partial.toolbarItems !== undefined) editorSettings.value.toolbarItems = normalizeToolbarItems(partial.toolbarItems);
     saveEditorSettings(editorSettings.value);
