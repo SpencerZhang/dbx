@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, onActivated, onDeactivated, watch, shallowRef, computed, nextTick } from "vue";
-import { Play, Copy, Table2, TextSelect } from "@lucide/vue";
+import { FileCode, Play, Copy, Table2, TextSelect } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import type { CompletionContext } from "@codemirror/autocomplete";
 import type { EditorView as EditorViewType } from "@codemirror/view";
@@ -74,6 +74,7 @@ const emit = defineEmits<{
   save: [];
   clickTable: [tableName: string];
   viewTableData: [tableName: string];
+  viewTableDdl: [tableName: string];
   clickColumn: [columns: Array<{ name: string; table: string; schema?: string }>, error?: string | undefined];
   closeColumnPanel: [];
   viewportChange: [viewport: { scrollTop: number; scrollLeft: number }];
@@ -481,6 +482,12 @@ function openTableFromContextMenu() {
   focusEditor();
 }
 
+function openTableDdlFromContextMenu() {
+  if (!contextTableName.value) return;
+  emit("viewTableDdl", contextTableName.value);
+  focusEditor();
+}
+
 function selectSqlLineFromGutter(currentView: EditorViewType, line: { from: number; to: number }, event: Event): boolean {
   if (!(event instanceof MouseEvent) || event.button !== 0) return false;
   event.preventDefault();
@@ -505,6 +512,12 @@ const contextMenuItems = computed<ContextMenuItem[]>(() => [
     action: openTableFromContextMenu,
     disabled: !contextTableName.value,
     icon: Table2,
+  },
+  {
+    label: t("contextMenu.viewDdl"),
+    action: openTableDdlFromContextMenu,
+    disabled: !contextTableName.value,
+    icon: FileCode,
   },
   { label: "", separator: true },
   {
