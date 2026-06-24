@@ -53,6 +53,7 @@ import {
   FilePlus,
   SquarePen,
   ListX,
+  Info,
 } from "@lucide/vue";
 import CustomContextMenu, { type ContextMenuItem } from "@/components/ui/CustomContextMenu.vue";
 import { useConnectionStore } from "@/stores/connectionStore";
@@ -82,11 +83,14 @@ import {
   buildDropDatabaseSql,
   buildDropObjectSql,
   buildDropSchemaSql,
+  buildGetSchemaCommentSql,
   buildDropTableSql,
   buildDropTableChildObjectSql,
   buildDuplicateTableStructureSql,
   buildEmptyTableSql,
+  buildSetSchemaCommentSql,
   buildTruncateTableSql,
+  supportsSchemaComment,
   type DropTableChildObjectSqlOptions,
   type DropObjectSqlOptions,
   type TableChildObjectType,
@@ -246,6 +250,8 @@ function getIconInfo(node: TreeNode): { icon: any; colorClass: string } | null {
       return { icon: Database, colorClass: "text-red-400" };
     case "mq-tenant":
       return { icon: FolderOpen, colorClass: "text-sky-400" };
+    case "nacos-namespace":
+      return { icon: FolderOpen, colorClass: "text-sky-500" };
     case "etcd-root":
       return { icon: Database, colorClass: "text-sky-500" };
     case "mongo-db":
@@ -404,17 +410,18 @@ const connectionInfoTooltip = computed(() => {
   return { rows };
 });
 
-const tableInfoTooltip = computed(() => {
+const objectCommentTooltip = computed(() => {
   const node = props.node;
-  if (node.type !== "table" && node.type !== "view") return null;
+  const comment = node.type === "column" && node.meta && "comment" in node.meta ? (node.meta as ColumnInfo).comment : node.comment;
+  if (!comment || (node.type !== "schema" && node.type !== "table" && node.type !== "view" && node.type !== "column")) return null;
   const rows: DetailTooltipRow[] = [
-    { label: t("structureEditor.tableName"), value: visibleLabel(node) },
-    { label: t("structureEditor.comment"), value: cleanTooltipValue(node.comment), multiline: true },
+    { label: t("connection.name"), value: visibleLabel(node) },
+    { label: t("structureEditor.comment"), value: cleanTooltipValue(comment), multiline: true },
   ].filter((row) => row.value);
   return { rows };
 });
 
-const detailTooltip = computed(() => connectionInfoTooltip.value ?? tableInfoTooltip.value);
+const detailTooltip = computed(() => connectionInfoTooltip.value ?? objectCommentTooltip.value);
 
 function isTooltipDisabled(): boolean {
   if (detailTooltip.value?.rows.length) return isRenamingGroup.value;
@@ -423,7 +430,10 @@ function isTooltipDisabled(): boolean {
 
 async function toggle() {
   const node = props.node;
-  if (node.isLoading) return;
+  if (node.isLoading) {
+    if (node.type !== "connection") return;
+    node.isLoading = false;
+  }
   emit("search-toggle", node);
   const wasExpanded = !!node.isExpanded;
 
@@ -468,6 +478,8 @@ async function toggle() {
         await connectionStore.loadVectorCollections(node.connectionId);
       } else if (config?.db_type === "mq") {
         await connectionStore.loadMqTenants(node.connectionId);
+      } else if (config?.db_type === "nacos") {
+        await connectionStore.loadNacosNamespaces(node.connectionId);
       } else {
         await connectionStore.loadDatabases(node.connectionId);
       }
@@ -476,6 +488,8 @@ async function toggle() {
       queryStore.createTab(node.connectionId, node.database, tabTitle, "redis");
     } else if (node.type === "mq-tenant" && node.connectionId) {
       queryStore.openMqAdmin(node.connectionId, { tenant: node.mqTenant || node.label });
+    } else if (node.type === "nacos-namespace" && node.connectionId) {
+      queryStore.openNacosAdmin(node.connectionId, { namespace: node.nacosNamespace || "", namespaceName: node.nacosNamespaceName || node.label });
     } else if (node.type === "etcd-root" && node.connectionId) {
       const tabTitle = `${connectionStore.getConfig(node.connectionId)?.name || "etcd"}:keys`;
       queryStore.createTab(node.connectionId, "", tabTitle, "etcd");
@@ -879,6 +893,17 @@ async function openData() {
       if (existing) {
         existing.title = node.label;
         existing.schema = tableSchema;
+        // Reset per-table filter/sort state so the reused tab doesn't keep
+        // the previous table's WHERE/ORDER BY. DataGrid remounts (result is
+        // cleared below) and reinitializes its inputs from these props.
+        existing.whereInput = undefined;
+        existing.orderByInput = undefined;
+        existing.resultSortColumn = undefined;
+        existing.resultSortColumnIndex = undefined;
+        existing.resultSortDirection = undefined;
+        existing.resultSortMode = undefined;
+        existing.resultLocalSortOriginalRows = undefined;
+        existing.resultSortedSql = undefined;
         queryStore.activeTabId = existing.id;
         return existing.id;
       }
@@ -1066,6 +1091,14 @@ async function newQuery() {
 
 // SQL template helpers have been extracted to @/lib/tableSqlTemplates.ts
 // ---- Template actions ----
+
+function openRedisInstanceInfo() {
+  const node = props.node;
+  if (!node.connectionId) return;
+  const config = connectionStore.getConfig(node.connectionId);
+  const dbName = config?.name || "Redis";
+  queryStore.createTab(node.connectionId, "0", `${dbName} - ${t("contextMenu.instanceInfo")}`, "redis-dashboard");
+}
 
 async function loadTemplateContext(allowView = false) {
   const node = props.node;
@@ -1371,6 +1404,15 @@ const showCreateDatabaseDialog = ref(false);
 const createDatabaseName = ref("");
 const createDatabaseCharset = ref("utf8mb4");
 const createDatabaseCollation = ref("utf8mb4_unicode_ci");
+const showCreateNacosNamespaceDialog = ref(false);
+const createNacosNamespaceId = ref("");
+const createNacosNamespaceName = ref("");
+const createNacosNamespaceDesc = ref("");
+const createNacosNamespaceLoading = ref(false);
+const showEditNacosNamespaceDialog = ref(false);
+const editNacosNamespaceName = ref("");
+const editNacosNamespaceDesc = ref("");
+const editNacosNamespaceLoading = ref(false);
 const fallbackCreateDatabaseCharset = fallbackCreateDatabaseCharsetMetadata();
 const createDatabaseCharsetOptions = ref<string[]>(fallbackCreateDatabaseCharset.charsets);
 const createDatabaseCollationsByCharset = ref<Record<string, string[]>>(fallbackCreateDatabaseCharset.collationsByCharset);
@@ -1383,6 +1425,9 @@ const showFlushRedisDbConfirm = ref(false);
 const showCreateSchemaDialog = ref(false);
 const createSchemaName = ref("");
 const showDropSchemaConfirm = ref(false);
+const showEditSchemaCommentDialog = ref(false);
+const schemaCommentText = ref("");
+const schemaCommentLoading = ref(false);
 
 // --- Procedure / Function Management ---
 const showDropObjectConfirm = ref(false);
@@ -1851,6 +1896,17 @@ const canCreateDatabase = computed(() => {
   return props.node.type === "connection" && (supportsDatabaseCreation(config?.db_type) || config?.db_type === "duckdb" || (config?.db_type === "mongodb" && config.driver_profile !== "mongodb-legacy"));
 });
 
+const canCreateNacosNamespace = computed(() => {
+  const config = props.node.connectionId ? connectionStore.getConfig(props.node.connectionId) : undefined;
+  return props.node.type === "connection" && config?.db_type === "nacos" && !config.read_only;
+});
+
+const canEditNacosNamespace = computed(() => {
+  if (props.node.type !== "nacos-namespace" || !props.node.connectionId || !props.node.nacosNamespace) return false;
+  const config = connectionStore.getConfig(props.node.connectionId);
+  return config?.db_type === "nacos" && !config.read_only;
+});
+
 const isDuckDbConnection = computed(() => {
   const config = props.node.connectionId ? connectionStore.getConfig(props.node.connectionId) : undefined;
   return props.node.type === "connection" && config?.db_type === "duckdb";
@@ -1884,6 +1940,11 @@ const canCreateSchema = computed(() => {
 const canDropSchema = computed(() => {
   const config = props.node.connectionId ? connectionStore.getConfig(props.node.connectionId) : undefined;
   return props.node.type === "schema" && !isSqlServerLinkedNode(props.node) && usesTreeSchemaMode(effectiveDatabaseTypeForConnection(config)) && !connectionUsesDatabaseObjectTreeMode(config);
+});
+
+const canEditSchemaComment = computed(() => {
+  const config = props.node.connectionId ? connectionStore.getConfig(props.node.connectionId) : undefined;
+  return props.node.type === "schema" && !!props.node.database && !config?.read_only && supportsSchemaComment(effectiveDatabaseTypeForConnection(config));
 });
 
 function tableAdminSqlOptions(): TableAdminSqlOptions {
@@ -1989,6 +2050,75 @@ async function refreshDropSchemaPreviewSql() {
   }).catch(() => "");
 }
 
+const schemaCommentPreviewSql = computed(() => {
+  if (!canEditSchemaComment.value) return "";
+  try {
+    return buildSetSchemaCommentSql({
+      databaseType: currentDatabaseType(),
+      name: props.node.schema || props.node.label,
+      comment: schemaCommentText.value,
+    });
+  } catch {
+    return "";
+  }
+});
+
+function schemaCommentFromResult(result: { columns?: string[]; rows?: unknown[] }): string {
+  const firstRow = result.rows?.[0];
+  if (Array.isArray(firstRow)) {
+    const index = Math.max(0, result.columns?.findIndex((column) => column === "comment") ?? 0);
+    return firstRow[index] == null ? "" : String(firstRow[index]);
+  }
+  if (firstRow && typeof firstRow === "object" && "comment" in firstRow) {
+    const value = (firstRow as { comment?: unknown }).comment;
+    return value == null ? "" : String(value);
+  }
+  return "";
+}
+
+async function openEditSchemaCommentDialog() {
+  const node = props.node;
+  if (!canEditSchemaComment.value || !node.connectionId || !node.database) return;
+  schemaCommentText.value = "";
+  schemaCommentLoading.value = true;
+  showEditSchemaCommentDialog.value = true;
+  try {
+    await connectionStore.ensureConnected(node.connectionId);
+    const sql = buildGetSchemaCommentSql({
+      databaseType: currentDatabaseType(),
+      name: node.schema || node.label,
+    });
+    const result = await api.executeQuery(node.connectionId, node.database, sql, node.schema, undefined, { maxRows: 1 });
+    schemaCommentText.value = schemaCommentFromResult(result);
+  } catch {
+    schemaCommentText.value = "";
+  } finally {
+    schemaCommentLoading.value = false;
+  }
+}
+
+async function confirmEditSchemaComment() {
+  const node = props.node;
+  if (!canEditSchemaComment.value || !node.connectionId || !node.database || schemaCommentLoading.value) return;
+  schemaCommentLoading.value = true;
+  try {
+    await connectionStore.ensureConnected(node.connectionId);
+    const sql = buildSetSchemaCommentSql({
+      databaseType: currentDatabaseType(),
+      name: node.schema || node.label,
+      comment: schemaCommentText.value,
+    });
+    await api.executeQuery(node.connectionId, node.database, sql, node.schema);
+    toast(t("contextMenu.editSchemaCommentSuccess", { name: node.label }), 3000);
+    showEditSchemaCommentDialog.value = false;
+    await connectionStore.loadSchemas(node.connectionId, node.database, { force: true });
+  } catch (e: any) {
+    toast(t("contextMenu.tableOperationFailed", { message: translateBackendError(t, e?.message || String(e)) }), 5000);
+  } finally {
+    schemaCommentLoading.value = false;
+  }
+}
+
 async function openCreateDatabase() {
   if (isDuckDbConnection.value) {
     await createDuckDbAttachedDatabaseFile();
@@ -2034,6 +2164,63 @@ async function loadCreateDatabaseCharsetMetadata() {
     createDatabaseCollationsByCharset.value = fallbackCreateDatabaseCharset.collationsByCharset;
   } finally {
     createDatabaseCharsetLoading.value = false;
+  }
+}
+
+function openCreateNacosNamespaceDialog() {
+  createNacosNamespaceId.value = "";
+  createNacosNamespaceName.value = "";
+  createNacosNamespaceDesc.value = "";
+  showCreateNacosNamespaceDialog.value = true;
+}
+
+async function confirmCreateNacosNamespace() {
+  const node = props.node;
+  const namespaceName = createNacosNamespaceName.value.trim();
+  if (!node.connectionId || !namespaceName || createNacosNamespaceLoading.value) return;
+  createNacosNamespaceLoading.value = true;
+  try {
+    await api.nacosCreateNamespace(node.connectionId, {
+      namespaceId: createNacosNamespaceId.value.trim() || undefined,
+      namespaceName,
+      namespaceDesc: createNacosNamespaceDesc.value.trim() || namespaceName,
+    });
+    showCreateNacosNamespaceDialog.value = false;
+    await connectionStore.loadNacosNamespaces(node.connectionId, { force: true });
+    node.isExpanded = true;
+    toast(t("nacos.namespaceCreated", { name: namespaceName }), 3000);
+  } catch (e: any) {
+    toast(t("contextMenu.tableOperationFailed", { message: translateBackendError(t, e?.message || String(e)) }), 5000);
+  } finally {
+    createNacosNamespaceLoading.value = false;
+  }
+}
+
+function openEditNacosNamespaceDialog() {
+  editNacosNamespaceName.value = props.node.nacosNamespaceName || props.node.label;
+  editNacosNamespaceDesc.value = props.node.comment || "";
+  showEditNacosNamespaceDialog.value = true;
+}
+
+async function confirmEditNacosNamespace() {
+  const node = props.node;
+  const namespaceId = node.nacosNamespace?.trim() || "";
+  const namespaceName = editNacosNamespaceName.value.trim();
+  if (!node.connectionId || !namespaceId || !namespaceName || editNacosNamespaceLoading.value) return;
+  editNacosNamespaceLoading.value = true;
+  try {
+    await api.nacosUpdateNamespace(node.connectionId, {
+      namespaceId,
+      namespaceName,
+      namespaceDesc: editNacosNamespaceDesc.value.trim() || namespaceName,
+    });
+    showEditNacosNamespaceDialog.value = false;
+    await connectionStore.loadNacosNamespaces(node.connectionId, { force: true });
+    toast(t("nacos.namespaceUpdated", { name: namespaceName }), 3000);
+  } catch (e: any) {
+    toast(t("contextMenu.tableOperationFailed", { message: translateBackendError(t, e?.message || String(e)) }), 5000);
+  } finally {
+    editNacosNamespaceLoading.value = false;
   }
 }
 
@@ -2847,7 +3034,11 @@ const hasTypeMenu = computed(() => {
 });
 const columnComment = computed(() => (!settingsStore.editorSettings.sidebarHideTableComments && props.node.type === "column" && props.node.meta && "comment" in props.node.meta ? (props.node.meta as any).comment : null));
 const tableComment = computed(() =>
-  !settingsStore.editorSettings.sidebarHideTableComments && (props.node.type === "table" || props.node.type === "view" || props.node.type === "mongo-collection" || props.node.type === "vector-collection" || props.node.type === "elasticsearch-index") && props.node.comment ? props.node.comment : null,
+  !settingsStore.editorSettings.sidebarHideTableComments &&
+  (props.node.type === "schema" || props.node.type === "table" || props.node.type === "view" || props.node.type === "mongo-collection" || props.node.type === "vector-collection" || props.node.type === "elasticsearch-index") &&
+  props.node.comment
+    ? props.node.comment
+    : null,
 );
 const paddingLeft = computed(() => treeItemPaddingLeft(props.depth));
 const isConnected = computed(() => props.node.type === "connection" && !!props.node.connectionId && connectionStore.connectedIds.has(props.node.connectionId));
@@ -2861,7 +3052,7 @@ const nodeIconClass = computed(() => {
 const canConfigureVisibleDatabases = computed(() => {
   if (props.node.type !== "connection" || !props.node.connectionId) return false;
   const dbType = connectionStore.getConfig(props.node.connectionId)?.db_type;
-  return dbType !== "elasticsearch" && dbType !== "qdrant" && dbType !== "milvus" && dbType !== "etcd" && dbType !== "mq";
+  return dbType !== "elasticsearch" && dbType !== "qdrant" && dbType !== "milvus" && dbType !== "etcd" && dbType !== "mq" && dbType !== "nacos";
 });
 const canCopyFinalProxyPort = computed(() => {
   if (props.node.type !== "connection" || !props.node.connectionId) return false;
@@ -3255,6 +3446,9 @@ function treeItemMenuItems(): ContextMenuItem[] {
       items.push({ label: t("contextMenu.closeConnection"), action: disconnectConnection, icon: Unplug });
     }
     items.push({ label: t("contextMenu.newQuery"), action: newQuery, icon: TerminalSquare });
+    if (currentDatabaseType() === "redis") {
+      items.push({ label: t("contextMenu.instanceInfo"), action: openRedisInstanceInfo, icon: Info });
+    }
     const sqlHistoryMenu = savedSqlHistorySubmenu();
     if (sqlHistoryMenu) items.push(sqlHistoryMenu);
     if (supportsDatabaseUserAdmin(currentDatabaseType())) {
@@ -3271,6 +3465,13 @@ function treeItemMenuItems(): ContextMenuItem[] {
         label: isDuckDbConnection.value ? t("contextMenu.createDuckDbFile") : t("contextMenu.createDatabase"),
         action: openCreateDatabase,
         icon: Plus,
+      });
+    }
+    if (canCreateNacosNamespace.value) {
+      items.push({
+        label: t("nacos.createNamespace"),
+        action: openCreateNacosNamespaceDialog,
+        icon: FolderPlus,
       });
     }
     items.push({ label: "", separator: true });
@@ -3378,6 +3579,9 @@ function treeItemMenuItems(): ContextMenuItem[] {
     if (canCreateSchema.value) {
       items.push({ label: t("contextMenu.createSchema"), action: openCreateSchemaDialog, icon: Plus });
     }
+    if (canEditSchemaComment.value) {
+      items.push({ label: t("contextMenu.editSchemaComment"), action: openEditSchemaCommentDialog, icon: SquarePen });
+    }
     if (canOpenSqlFileExecution.value) {
       items.push({ label: t("sqlFile.title"), action: openSqlFileExecution, icon: FileCode });
     }
@@ -3452,6 +3656,22 @@ function treeItemMenuItems(): ContextMenuItem[] {
       items.push({ label: "", separator: true });
       items.push({ label: t("contextMenu.dropDatabase"), action: dropDatabase, icon: Trash2, shortcut: shortcutDelete, variant: "destructive" as const });
     }
+    return items;
+  }
+
+  if (node.type === "nacos-namespace") {
+    items.push({ label: t("contextMenu.openConnection"), action: toggle, icon: FolderOpen });
+    if (canEditNacosNamespace.value) {
+      items.push({ label: t("nacos.editNamespace"), action: openEditNacosNamespaceDialog, icon: Pencil });
+    }
+    items.push({
+      label: t("contextMenu.refreshChildren"),
+      action: refresh,
+      icon: RefreshCw,
+      shortcut: shortcutRefresh,
+    });
+    items.push({ label: "", separator: true });
+    items.push({ label: t("contextMenu.copyName"), action: copyName, icon: Copy, shortcut: shortcutCopyName.value });
     return items;
   }
 
@@ -4004,6 +4224,58 @@ function treeItemMenuItems(): ContextMenuItem[] {
     </DialogContent>
   </Dialog>
 
+  <Dialog v-model:open="showCreateNacosNamespaceDialog">
+    <DialogContent class="sm:max-w-[420px]">
+      <DialogHeader>
+        <DialogTitle>{{ t("nacos.createNamespace") }}</DialogTitle>
+      </DialogHeader>
+      <div class="grid gap-3">
+        <div class="grid gap-1.5">
+          <label class="text-xs font-medium text-muted-foreground">{{ t("nacos.namespaceId") }}</label>
+          <Input v-model="createNacosNamespaceId" :placeholder="t('nacos.namespaceIdPlaceholder')" @keydown.enter.prevent="confirmCreateNacosNamespace" />
+        </div>
+        <div class="grid gap-1.5">
+          <label class="text-xs font-medium text-muted-foreground">{{ t("nacos.namespaceName") }}</label>
+          <Input v-model="createNacosNamespaceName" :placeholder="t('nacos.namespaceNamePlaceholder')" @keydown.enter.prevent="confirmCreateNacosNamespace" />
+        </div>
+        <div class="grid gap-1.5">
+          <label class="text-xs font-medium text-muted-foreground">{{ t("nacos.namespaceDesc") }}</label>
+          <Input v-model="createNacosNamespaceDesc" :placeholder="t('nacos.namespaceDescPlaceholder')" @keydown.enter.prevent="confirmCreateNacosNamespace" />
+        </div>
+      </div>
+      <DialogFooter>
+        <Button variant="outline" :disabled="createNacosNamespaceLoading" @click="showCreateNacosNamespaceDialog = false">{{ t("dangerDialog.cancel") }}</Button>
+        <Button :disabled="!createNacosNamespaceName.trim() || createNacosNamespaceLoading" @click="confirmCreateNacosNamespace">
+          {{ createNacosNamespaceLoading ? t("nacos.creatingNamespace") : t("dangerDialog.confirm") }}
+        </Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>
+
+  <Dialog v-model:open="showEditNacosNamespaceDialog">
+    <DialogContent class="sm:max-w-[420px]">
+      <DialogHeader>
+        <DialogTitle>{{ t("nacos.editNamespace") }}</DialogTitle>
+      </DialogHeader>
+      <div class="grid gap-3">
+        <div class="grid gap-1.5">
+          <label class="text-xs font-medium text-muted-foreground">{{ t("nacos.namespaceName") }}</label>
+          <Input v-model="editNacosNamespaceName" :placeholder="t('nacos.namespaceNamePlaceholder')" @keydown.enter.prevent="confirmEditNacosNamespace" />
+        </div>
+        <div class="grid gap-1.5">
+          <label class="text-xs font-medium text-muted-foreground">{{ t("nacos.namespaceDesc") }}</label>
+          <Input v-model="editNacosNamespaceDesc" :placeholder="t('nacos.namespaceDescPlaceholder')" @keydown.enter.prevent="confirmEditNacosNamespace" />
+        </div>
+      </div>
+      <DialogFooter>
+        <Button variant="outline" :disabled="editNacosNamespaceLoading" @click="showEditNacosNamespaceDialog = false">{{ t("dangerDialog.cancel") }}</Button>
+        <Button :disabled="!editNacosNamespaceName.trim() || editNacosNamespaceLoading" @click="confirmEditNacosNamespace">
+          {{ editNacosNamespaceLoading ? t("nacos.updatingNamespace") : t("dangerDialog.confirm") }}
+        </Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>
+
   <DangerConfirmDialog
     v-model:open="showDropDatabaseConfirm"
     :title="t('contextMenu.confirmDropDatabaseTitle')"
@@ -4036,6 +4308,31 @@ function treeItemMenuItems(): ContextMenuItem[] {
       <DialogFooter>
         <Button variant="outline" @click="showCreateSchemaDialog = false">{{ t("dangerDialog.cancel") }}</Button>
         <Button :disabled="!createSchemaName.trim()" @click="confirmCreateSchema">{{ t("dangerDialog.confirm") }}</Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>
+
+  <Dialog v-model:open="showEditSchemaCommentDialog">
+    <DialogContent class="sm:max-w-[520px]">
+      <DialogHeader>
+        <DialogTitle>{{ t("contextMenu.editSchemaCommentTitle", { name: node.label }) }}</DialogTitle>
+      </DialogHeader>
+      <div class="grid gap-3">
+        <textarea
+          v-model="schemaCommentText"
+          class="min-h-28 w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm outline-none transition-colors focus:border-ring focus:ring-1 focus:ring-ring/40"
+          :placeholder="t('contextMenu.schemaCommentPlaceholder')"
+          :disabled="schemaCommentLoading"
+          @keydown.meta.enter.prevent="confirmEditSchemaComment"
+          @keydown.ctrl.enter.prevent="confirmEditSchemaComment"
+        ></textarea>
+        <pre v-if="schemaCommentPreviewSql" class="max-h-32 overflow-auto rounded bg-muted p-3 text-xs whitespace-pre-wrap" v-html="highlight(schemaCommentPreviewSql)"></pre>
+      </div>
+      <DialogFooter>
+        <Button variant="outline" :disabled="schemaCommentLoading" @click="showEditSchemaCommentDialog = false">{{ t("dangerDialog.cancel") }}</Button>
+        <Button :disabled="schemaCommentLoading" @click="confirmEditSchemaComment">
+          {{ schemaCommentLoading ? t("contextMenu.schemaCommentSaving") : t("dangerDialog.confirm") }}
+        </Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>

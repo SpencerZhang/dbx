@@ -73,6 +73,15 @@ pub async fn list_schemas(
 }
 
 #[tauri::command]
+pub async fn list_schema_infos(
+    state: State<'_, Arc<AppState>>,
+    connection_id: String,
+    database: String,
+) -> Result<Vec<db::SchemaInfo>, String> {
+    dbx_core::schema::list_schema_infos_core(&state, &connection_id, &database).await
+}
+
+#[tauri::command]
 pub async fn list_tables(
     state: State<'_, Arc<AppState>>,
     connection_id: String,
@@ -135,6 +144,14 @@ pub async fn list_completion_objects(
     schema: String,
 ) -> Result<Vec<db::ObjectInfo>, String> {
     dbx_core::schema::list_completion_objects_core(&state, &connection_id, &database, &schema).await
+}
+
+#[tauri::command]
+pub async fn completion_assistant_search(
+    state: State<'_, Arc<AppState>>,
+    request: db::CompletionAssistantRequest,
+) -> Result<db::CompletionAssistantResponse, String> {
+    dbx_core::schema::completion_assistant_search_core(&state, request).await
 }
 
 #[tauri::command]

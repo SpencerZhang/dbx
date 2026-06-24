@@ -47,12 +47,12 @@ function oracleConn(id: string): ConnectionConfig {
 }
 
 function withConnectionHealthMock(handler: typeof fetch): typeof fetch {
-  return (async (input, init) => {
+  return async (input, init) => {
     if (String(input) === "/api/connection/check-health") {
       return new Response("null", { status: 200, headers: { "Content-Type": "application/json" } });
     }
     return handler(input, init);
-  });
+  };
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 1000) {
@@ -112,7 +112,10 @@ test("marked-clean object source tabs close without unsaved confirmation", () =>
   store.closeTab(tabId);
 
   assert.equal(store.showCloseConfirm, false);
-  assert.equal(store.tabs.some((item) => item.id === tabId), false);
+  assert.equal(
+    store.tabs.some((item) => item.id === tabId),
+    false,
+  );
 });
 
 test("editing query sql preserves the displayed result editability state", () => {
@@ -164,6 +167,50 @@ test("editing query sql preserves the displayed result editability state", () =>
   assert.deepEqual(tab.querySourceColumns, ["id", "name"]);
   assert.equal(tab.queryAnalysis?.tableName, "users");
   assert.equal(tab.tableMeta?.tableName, "users");
+});
+
+test("sortTabResultLocally sorts current rows and restores original order", () => {
+  setActivePinia(createPinia());
+  const store = useQueryStore();
+  const tabId = store.createTab("conn-1", "db");
+  const tab = store.tabs.find((item) => item.id === tabId);
+  assert.ok(tab);
+
+  tab.resultBaseSql = "select id, name from users";
+  tab.resultSortedSql = "select id, name from users order by name";
+  tab.result = {
+    columns: ["id", "name"],
+    rows: [
+      [2, "Grace"],
+      [1, "Ada"],
+      [3, "Linus"],
+    ],
+    affected_rows: 0,
+    execution_time_ms: 1,
+  };
+
+  store.sortTabResultLocally(tabId, "name", 1, "asc");
+
+  assert.deepEqual(tab.result?.rows, [
+    [1, "Ada"],
+    [2, "Grace"],
+    [3, "Linus"],
+  ]);
+  assert.equal(tab.resultSortColumn, "name");
+  assert.equal(tab.resultSortColumnIndex, 1);
+  assert.equal(tab.resultSortDirection, "asc");
+  assert.equal(tab.resultSortMode, "local");
+  assert.equal(tab.resultSortedSql, undefined);
+
+  store.sortTabResultLocally(tabId, "name", 1, null);
+
+  assert.deepEqual(tab.result?.rows, [
+    [2, "Grace"],
+    [1, "Ada"],
+    [3, "Linus"],
+  ]);
+  assert.equal(tab.resultSortColumn, undefined);
+  assert.equal(tab.resultSortMode, undefined);
 });
 
 test("selecting a result run restores its displayed result without changing SQL draft", async () => {
@@ -246,7 +293,10 @@ test("removing the active result run selects an adjacent run", async () => {
 
   assert.equal(store.removeResultRun(tabId, "run-2"), true);
 
-  assert.deepEqual(tab.resultRuns?.map((run) => run.id), ["run-1", "run-3"]);
+  assert.deepEqual(
+    tab.resultRuns?.map((run) => run.id),
+    ["run-1", "run-3"],
+  );
   assert.equal(tab.activeResultRunId, "run-3");
   assert.deepEqual(tab.result?.columns, ["three"]);
   assert.deepEqual(tab.result?.rows, [[3]]);
@@ -254,7 +304,10 @@ test("removing the active result run selects an adjacent run", async () => {
 
   assert.equal(store.removeResultRun(tabId, "run-3"), true);
 
-  assert.deepEqual(tab.resultRuns?.map((run) => run.id), ["run-1"]);
+  assert.deepEqual(
+    tab.resultRuns?.map((run) => run.id),
+    ["run-1"],
+  );
   assert.equal(tab.activeResultRunId, "run-1");
   assert.deepEqual(tab.result?.columns, ["one"]);
 });
@@ -294,7 +347,10 @@ test("removed result runs are excluded from result archives", async () => {
   assert.ok(archive);
   const decoded = await decodeQueryResultArchive(archive);
 
-  assert.deepEqual(decoded?.snapshot.resultRuns?.map((run) => run.id), ["run-2"]);
+  assert.deepEqual(
+    decoded?.snapshot.resultRuns?.map((run) => run.id),
+    ["run-2"],
+  );
   assert.deepEqual(decoded?.snapshot.resultRuns?.[0]?.result?.columns, ["two"]);
   assert.deepEqual(decoded?.snapshot.resultRuns?.[0]?.result?.rows, [[2]]);
 });
@@ -403,10 +459,7 @@ test("completed query executions append result runs and select the latest run", 
     }
     if (url === "/api/query/execute-multi") {
       executeCount++;
-      return new Response(
-        JSON.stringify([{ columns: [`run_${executeCount}`], rows: [[executeCount]], affected_rows: 0, execution_time_ms: 1 }]),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      );
+      return new Response(JSON.stringify([{ columns: [`run_${executeCount}`], rows: [[executeCount]], affected_rows: 0, execution_time_ms: 1 }]), { status: 200, headers: { "Content-Type": "application/json" } });
     }
     if (url === "/api/query/analyze-editability") {
       return new Response(JSON.stringify({ editable: false, reason: "complex-source" }), {
@@ -425,7 +478,10 @@ test("completed query executions append result runs and select the latest run", 
 
     const tab = store.tabs.find((item) => item.id === tabId);
     assert.equal(tab?.resultRuns?.length, 2);
-    assert.deepEqual(tab?.resultRuns?.map((run) => run.title), ["Run 1", "Run 2"]);
+    assert.deepEqual(
+      tab?.resultRuns?.map((run) => run.title),
+      ["Run 1", "Run 2"],
+    );
     assert.equal(tab?.resultRuns?.[0]?.sql, "select 1");
     assert.equal(tab?.resultRuns?.[1]?.sql, "select 2");
     assert.equal(tab?.activeResultRunId, tab?.resultRuns?.[1]?.id);
@@ -1343,9 +1399,7 @@ test("query result export fetches every paginated page", async () => {
       const body = JSON.parse(String(init?.body ?? "{}"));
       executedSqls.push(body.sql);
       timeoutSecs.push(body.timeoutSecs);
-      const rows = String(body.sql).includes("offset:0")
-        ? Array.from({ length: 10_000 }, (_, index) => [index + 1])
-        : [[10_001], [10_002]];
+      const rows = String(body.sql).includes("offset:0") ? Array.from({ length: 10_000 }, (_, index) => [index + 1]) : [[10_001], [10_002]];
       return new Response(JSON.stringify([{ columns: ["id"], rows, affected_rows: 0, execution_time_ms: 1 }]), {
         status: 200,
         headers: { "Content-Type": "application/json" },

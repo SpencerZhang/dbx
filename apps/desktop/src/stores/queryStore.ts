@@ -34,6 +34,7 @@ import { tableMetaForDataTab } from "@/lib/tableDataTabMeta";
 import { quoteTableIdentifier } from "@/lib/tableSelectSql";
 import { connectionUsesDatabaseObjectTreeMode, connectionUsesSchemaExecutionContext, effectiveDatabaseTypeForConnection } from "@/lib/jdbcDialect";
 import { queryTimeoutSecsForConnection } from "@/lib/queryTimeout";
+import { sortDataGridRows, type DataGridSortDirection } from "@/lib/dataGridSort";
 import { clearDataGridPendingSnapshotsForTab } from "@/composables/useDataGridEditor";
 import { buildTabResultSnapshot, deleteTabResultSnapshot, readTabResultSnapshot, tabResultCacheKey, writeTabResultSnapshot } from "@/lib/tabResultCache";
 import { decodeQueryResultArchive, encodeQueryResultArchive, type DecodedQueryResultArchive } from "@/lib/queryResultArchive";
@@ -202,6 +203,8 @@ export const useQueryStore = defineStore("query", () => {
     tab.result = undefined;
     tab.results = undefined;
     tab.activeResultIndex = undefined;
+    tab.resultLocalSortOriginalRows = undefined;
+    tab.resultSortMode = undefined;
     tab.resultSessionId = undefined;
     tab.resultAccessedAt = undefined;
     tab.queryAnalysis = undefined;
@@ -233,6 +236,8 @@ export const useQueryStore = defineStore("query", () => {
     tab.resultSortColumn = run.resultSortColumn;
     tab.resultSortColumnIndex = run.resultSortColumnIndex;
     tab.resultSortDirection = run.resultSortDirection;
+    tab.resultSortMode = run.resultSortMode;
+    tab.resultLocalSortOriginalRows = undefined;
     tab.orderByInput = run.orderByInput;
     tab.resultPageSql = run.resultPageSql;
     tab.resultPageLimit = run.resultPageLimit;
@@ -351,6 +356,7 @@ export const useQueryStore = defineStore("query", () => {
       resultSortColumn: tab.resultSortColumn,
       resultSortColumnIndex: tab.resultSortColumnIndex,
       resultSortDirection: tab.resultSortDirection,
+      resultSortMode: tab.resultSortMode,
       orderByInput: tab.orderByInput,
       resultPageSql: tab.resultPageSql,
       resultPageLimit: tab.resultPageLimit,
@@ -397,6 +403,7 @@ export const useQueryStore = defineStore("query", () => {
       resultSortColumn: tab.resultSortColumn,
       resultSortColumnIndex: tab.resultSortColumnIndex,
       resultSortDirection: tab.resultSortDirection,
+      resultSortMode: tab.resultSortMode,
       orderByInput: tab.orderByInput,
       resultPageSql: tab.resultPageSql,
       resultPageLimit: tab.resultPageLimit,
@@ -425,6 +432,38 @@ export const useQueryStore = defineStore("query", () => {
     } else if (tab.resultAutoSave) {
       captureDisplayedResultRun(tab, sql);
     }
+  }
+
+  function assignDisplayedResult(tab: QueryTab, result: QueryResult) {
+    tab.result = markQueryResultRowsRaw(result);
+    if (tab.results?.length) {
+      const activeIndex = tab.activeResultIndex ?? 0;
+      if (activeIndex >= 0 && activeIndex < tab.results.length) {
+        tab.results[activeIndex] = tab.result;
+      }
+    }
+  }
+
+  function sortTabResultLocally(id: string, column: string, columnIndex: number, direction: DataGridSortDirection | null) {
+    const tab = tabs.value.find((t) => t.id === id);
+    if (!tab?.result) return;
+
+    if (!tab.resultLocalSortOriginalRows) {
+      tab.resultLocalSortOriginalRows = tab.result.rows.slice();
+    }
+
+    const rows = direction ? sortDataGridRows(tab.resultLocalSortOriginalRows, columnIndex, direction) : tab.resultLocalSortOriginalRows;
+    assignDisplayedResult(tab, { ...tab.result, rows });
+
+    tab.resultSortColumn = direction ? column : undefined;
+    tab.resultSortColumnIndex = direction ? columnIndex : undefined;
+    tab.resultSortDirection = direction ?? undefined;
+    tab.resultSortMode = direction ? "local" : undefined;
+    tab.resultSortedSql = undefined;
+    if (!direction) tab.resultLocalSortOriginalRows = undefined;
+
+    touchResult(tab);
+    syncDisplayedResultRun(tab, tab.resultBaseSql ?? tab.lastExecutedSql ?? tab.sql);
   }
 
   function resultRunHasPayload(run: NonNullable<QueryTab["resultRuns"]>[number]): boolean {
@@ -459,6 +498,7 @@ export const useQueryStore = defineStore("query", () => {
       resultSortColumn: t.resultSortColumn,
       resultSortColumnIndex: t.resultSortColumnIndex,
       resultSortDirection: t.resultSortDirection,
+      resultSortMode: t.resultSortMode,
       orderByInput: t.orderByInput,
       resultPageLimit: t.resultPageLimit,
       resultPageOffset: t.resultPageOffset,
@@ -603,6 +643,37 @@ export const useQueryStore = defineStore("query", () => {
     return id;
   }
 
+  function openNacosAdmin(connectionId: string, target?: { namespace?: string; namespaceName?: string }) {
+    const namespace = target?.namespace ?? "";
+    const namespaceName = target?.namespaceName || (namespace ? namespace : "public");
+    const existing = tabs.value.find((tab) => tab.mode === "nacos" && tab.connectionId === connectionId && (tab.nacosNamespace || "") === namespace);
+    if (existing) {
+      existing.nacosNamespaceName = namespaceName;
+      if (!existing.customTitle) existing.title = `${useConnectionStore().getConfig(connectionId)?.name || "Nacos"}:${namespaceName}`;
+      activeTabId.value = existing.id;
+      return existing.id;
+    }
+
+    const conn = useConnectionStore().getConfig(connectionId);
+    const id = uuid();
+    const tab: QueryTab = {
+      id,
+      title: `${conn?.name || "Nacos"}:${namespaceName}`,
+      connectionId,
+      database: conn?.database || "",
+      sql: "",
+      isExecuting: false,
+      isCancelling: false,
+      isExplaining: false,
+      mode: "nacos",
+      nacosNamespace: namespace,
+      nacosNamespaceName: namespaceName,
+    };
+    tabs.value.push(tab);
+    activeTabId.value = id;
+    return id;
+  }
+
   function openTableStructure(connectionId: string, database: string, schema?: string, tableName?: string) {
     const resolvedTableName = tableName || "";
     if (resolvedTableName) {
@@ -740,6 +811,8 @@ export const useQueryStore = defineStore("query", () => {
       resultSortColumn: undefined,
       resultSortColumnIndex: undefined,
       resultSortDirection: undefined,
+      resultSortMode: undefined,
+      resultLocalSortOriginalRows: undefined,
       orderByInput: undefined,
       resultPageSql: undefined,
       resultPageLimit: undefined,
@@ -769,6 +842,8 @@ export const useQueryStore = defineStore("query", () => {
       explainExecutionId: undefined,
       mode: original.mode,
       mqTenant: original.mqTenant,
+      nacosNamespace: original.nacosNamespace,
+      nacosNamespaceName: original.nacosNamespaceName,
       structureTableName: original.structureTableName,
       objectBrowser: original.objectBrowser ? { ...original.objectBrowser } : undefined,
       objectSource: original.objectSource ? { ...original.objectSource } : undefined,
@@ -1279,6 +1354,7 @@ export const useQueryStore = defineStore("query", () => {
     }
     tab.executionId = executionId;
     tab.lastExecutedSql = sql;
+    tab.resultLocalSortOriginalRows = undefined;
     const updateActiveResultRun = !!tab.activeResultRunId && options?.preserveResultDuringExecution === true;
     if (!updateActiveResultRun) {
       tab.activeResultRunId = undefined;
@@ -1886,6 +1962,11 @@ export const useQueryStore = defineStore("query", () => {
     if (!tab?.results || index < 0 || index >= tab.results.length) return;
     tab.activeResultIndex = index;
     tab.result = tab.results[index];
+    tab.resultLocalSortOriginalRows = undefined;
+    tab.resultSortColumn = undefined;
+    tab.resultSortColumnIndex = undefined;
+    tab.resultSortDirection = undefined;
+    tab.resultSortMode = undefined;
     touchResult(tab);
     tab.queryAnalysis = undefined;
     tab.querySourceColumns = undefined;
@@ -2189,6 +2270,7 @@ export const useQueryStore = defineStore("query", () => {
     openObjectBrowser,
     openUserAdmin,
     openMqAdmin,
+    openNacosAdmin,
     openTableStructure,
     linkSavedSql,
     openSavedSql,
@@ -2211,6 +2293,7 @@ export const useQueryStore = defineStore("query", () => {
     executeCurrentTab,
     executeCurrentSql,
     executeTabSql,
+    sortTabResultLocally,
     explainTabSql,
     cancelTabExecution,
     cancelTabExplain,

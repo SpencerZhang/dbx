@@ -13,7 +13,7 @@ import { usesTreeSchemaMode } from "@/lib/databaseFeatureSupport";
 import { connectionUsesDatabaseObjectTreeMode, effectiveDatabaseTypeForConnection } from "@/lib/jdbcDialect";
 import { activeTabSidebarTarget, findSidebarNodeForActiveTab, findSidebarNodeForTarget, findNodePathForTarget, scrollTopForSidebarNode, shouldScrollActiveSidebarSelection, type ActiveTabSidebarTarget } from "@/lib/sidebarActiveTabTarget";
 import { findLoadedTableTargetForCandidate, queryContextTargetFromCandidate, queryCursorTableCandidate, type QueryCursorTableCandidate } from "@/lib/queryCursorTableTarget";
-import { SIDEBAR_TREE_ROW_HEIGHT, SIDEBAR_TREE_PRERENDER_COUNT, SIDEBAR_TREE_SCROLL_BUFFER, flattenTree, scrollTopForExpandedTreeNode, shouldAutoScrollExpandedTreeNode, shouldVirtualizeFlatTree, type FlatTreeNode } from "@/composables/useFlatTree";
+import { SIDEBAR_TREE_ROW_HEIGHT, SIDEBAR_TREE_PRERENDER_COUNT, SIDEBAR_TREE_SCROLL_BUFFER, flattenTree, shouldVirtualizeFlatTree, type FlatTreeNode } from "@/composables/useFlatTree";
 import { sidebarTreeContextKey } from "@/lib/sidebarTreeContext";
 import TreeItem from "./TreeItem.vue";
 import { RecycleScroller } from "vue-virtual-scroller";
@@ -33,6 +33,7 @@ const plainTreeScrollerRef = ref<HTMLElement | null>(null);
 type SearchScope = "connection" | "database" | "schema" | "table" | "view";
 const selectedSearchScopes = ref<SearchScope[]>([]);
 const searchCollapsedIds = ref<Set<string>>(new Set());
+const searchRefreshedGroupIds = new Set<string>();
 let searchTimer: number | undefined;
 
 watch(
@@ -53,25 +54,34 @@ watch(
   { flush: "sync" },
 );
 
-watch(deferredSearchQuery, (newQuery) => {
+watch(deferredSearchQuery, (newQuery, oldQuery) => {
   store.sidebarSearchQuery = newQuery;
   const tasks: Promise<void>[] = [];
   for (const root of store.treeNodes) {
-    findExpandedTableParents(root, tasks);
+    collectExpandedObjectGroups(root, tasks, newQuery ? searchRefreshedGroupIds : undefined);
+  }
+  if (!newQuery && oldQuery) {
+    searchRefreshedGroupIds.clear();
   }
   Promise.all(tasks).catch(() => {});
 });
 
-function findExpandedTableParents(node: TreeNode, tasks: Promise<void>[]) {
-  if (node.isExpanded && node.connectionId && (node.type === "database" || node.type === "schema")) {
-    const groupTypes = new Set(["group-tables", "group-views", "group-procedures", "group-functions", "group-sequences", "group-packages"]);
-    if (node.children?.some((child) => groupTypes.has(child.type))) {
-      tasks.push(store.loadObjectGroupChildren(node, { force: true }));
+const searchableObjectGroupTypes = new Set<TreeNodeType>(["group-tables", "group-views", "group-materialized-views"]);
+
+function collectExpandedObjectGroups(node: TreeNode, tasks: Promise<void>[], refreshedGroupIds?: Set<string>) {
+  if (refreshedGroupIds && node.isExpanded && node.children) {
+    for (const child of node.children) {
+      if (child.connectionId && searchableObjectGroupTypes.has(child.type)) {
+        refreshedGroupIds.add(child.id);
+        tasks.push(store.loadObjectGroupChildren(child, { force: true }));
+      }
     }
+  } else if (!refreshedGroupIds && searchRefreshedGroupIds.has(node.id)) {
+    tasks.push(store.loadObjectGroupChildren(node, { force: true }));
   }
   if (node.children) {
     for (const child of node.children) {
-      findExpandedTableParents(child, tasks);
+      collectExpandedObjectGroups(child, tasks, refreshedGroupIds);
     }
   }
 }
@@ -81,7 +91,7 @@ const isFiltering = computed(() => !!searchQuery.value.trim() || hasSearchScopeF
 
 const SEARCH_SCOPE_TO_NODE_TYPES: Record<SearchScope, TreeNodeType[]> = {
   connection: ["connection"],
-  database: ["database", "redis-db", "mq-tenant", "mongo-db"],
+  database: ["database", "redis-db", "mq-tenant", "nacos-namespace", "mongo-db"],
   schema: ["schema"],
   table: ["table", "mongo-collection", "vector-collection", "elasticsearch-index"],
   view: ["view"],
@@ -340,6 +350,8 @@ async function ensureTreeLoadedForTarget(target: ActiveTabSidebarTarget, opts?: 
         await store.loadVectorCollections(connId);
       } else if (config.db_type === "mq") {
         await store.loadMqTenants(connId, loadOptions);
+      } else if (config.db_type === "nacos") {
+        await store.loadNacosNamespaces(connId, loadOptions);
       } else {
         await store.loadDatabases(connId, loadOptions);
       }
@@ -348,7 +360,7 @@ async function ensureTreeLoadedForTarget(target: ActiveTabSidebarTarget, opts?: 
     }
   }
 
-  if (config.db_type === "mq") return;
+  if (config.db_type === "mq" || config.db_type === "nacos") return;
   if (!("database" in target) || !target.database) return;
 
   // Find the database node
@@ -447,29 +459,6 @@ function onSearchToggle(node: TreeNode) {
   if (node.isExpanded) next.add(node.id);
   else next.delete(node.id);
   searchCollapsedIds.value = next;
-}
-
-async function onNodeToggled(node: TreeNode, wasExpanded: boolean) {
-  if (wasExpanded || !node.isExpanded) return;
-  if (!shouldAutoScrollExpandedTreeNode(node.type)) return;
-
-  await nextTick();
-
-  const expandedIndex = flatNodes.value.findIndex((item) => item.id === node.id);
-  const insertedRowCount = flattenTree([node]).length - 1;
-  const scroller = treeScrollerRef.value?.$el as HTMLElement | undefined;
-  if (!scroller || expandedIndex < 0 || insertedRowCount <= 0) return;
-
-  const nextScrollTop = scrollTopForExpandedTreeNode({
-    expandedIndex,
-    insertedRowCount,
-    currentScrollTop: scroller.scrollTop,
-    viewportHeight: scroller.clientHeight,
-  });
-
-  if (nextScrollTop !== scroller.scrollTop) {
-    scroller.scrollTop = nextScrollTop;
-  }
 }
 
 function currentTreeScroller(): HTMLElement | null {
@@ -628,16 +617,7 @@ defineExpose({ focusSearch, createNewGroup });
       flow-mode
     >
       <template #default="{ item }">
-        <TreeItem
-          :node="item.node"
-          :depth="item.depth"
-          :drag-disabled="isFiltering"
-          :pending-rename="pendingRenameGroupId === item.node.id"
-          :highlighted="highlightedNodeId === item.node.id"
-          @node-toggled="onNodeToggled"
-          @search-toggle="onSearchToggle"
-          @rename-started="pendingRenameGroupId = null"
-        />
+        <TreeItem :node="item.node" :depth="item.depth" :drag-disabled="isFiltering" :pending-rename="pendingRenameGroupId === item.node.id" :highlighted="highlightedNodeId === item.node.id" @search-toggle="onSearchToggle" @rename-started="pendingRenameGroupId = null" />
       </template>
     </RecycleScroller>
     <div v-else-if="flatNodes.length > 0" ref="plainTreeScrollerRef" class="sidebar-tree min-h-0 flex-1 overflow-y-auto" :class="sidebarTreeOverflowClass" @click="clearSidebarSelection">
@@ -649,7 +629,6 @@ defineExpose({ focusSearch, createNewGroup });
         :drag-disabled="isFiltering"
         :pending-rename="pendingRenameGroupId === item.node.id"
         :highlighted="highlightedNodeId === item.id"
-        @node-toggled="onNodeToggled"
         @search-toggle="onSearchToggle"
         @rename-started="pendingRenameGroupId = null"
       />

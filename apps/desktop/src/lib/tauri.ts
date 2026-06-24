@@ -3,9 +3,12 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   ConnectionConfig,
   DatabaseInfo,
+  SchemaInfo,
   LinkedServerInfo,
   TableInfo,
   ObjectInfo,
+  CompletionAssistantRequest,
+  CompletionAssistantResponse,
   ObjectStatistics,
   ObjectSource,
   ObjectSourceKind,
@@ -533,12 +536,20 @@ export async function listCompletionObjects(connectionId: string, database: stri
   return invoke("list_completion_objects", { connectionId, database, schema });
 }
 
+export async function completionAssistantSearch(request: CompletionAssistantRequest): Promise<CompletionAssistantResponse> {
+  return invoke("completion_assistant_search", { request });
+}
+
 export async function getObjectSource(connectionId: string, database: string, schema: string, name: string, objectType: ObjectSourceKind): Promise<ObjectSource> {
   return invoke("get_object_source", { connectionId, database, schema, name, objectType });
 }
 
 export async function listSchemas(connectionId: string, database: string): Promise<string[]> {
   return invoke("list_schemas", { connectionId, database });
+}
+
+export async function listSchemaInfos(connectionId: string, database: string): Promise<SchemaInfo[]> {
+  return invoke("list_schema_infos", { connectionId, database });
 }
 
 export async function getColumns(connectionId: string, database: string, schema: string, table: string): Promise<ColumnInfo[]> {
@@ -1837,3 +1848,4 @@ export async function exportQueryResultMarkdown(filePath: string, columns: strin
 }
 
 export * from "./mq-tauri";
+export * from "./nacos-tauri";

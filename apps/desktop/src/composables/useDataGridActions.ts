@@ -11,6 +11,7 @@ import type { QueryTab } from "@/types/database";
 import { useToast } from "@/composables/useToast";
 import { connectionObjectTreeQuerySchema, effectiveDatabaseTypeForConnection } from "@/lib/jdbcDialect";
 import { uuid } from "@/lib/utils";
+import type { DataGridSortMode } from "@/lib/dataGridSort";
 
 const DATA_TAB_METADATA_TTL_MS = 30_000;
 
@@ -175,12 +176,22 @@ export function useDataGridActions(activeTab: ComputedRef<QueryTab | undefined>)
     });
   }
 
-  async function onSort(column: string, columnIndex: number, direction: "asc" | "desc" | null, whereInput?: string) {
+  async function onSort(column: string, columnIndex: number, direction: "asc" | "desc" | null, whereInput?: string, mode: DataGridSortMode = "database") {
     const tab = activeTab.value;
     if (!tab) return;
     tab.resultSortColumn = direction ? column : undefined;
     tab.resultSortColumnIndex = direction ? columnIndex : undefined;
     tab.resultSortDirection = direction ?? undefined;
+    tab.resultSortMode = direction ? mode : undefined;
+
+    if (mode === "local") {
+      if (tab.mode === "data") {
+        tab.whereInput = whereInput ?? "";
+        tab.orderByInput = undefined;
+      }
+      queryStore.sortTabResultLocally(tab.id, column, columnIndex, direction);
+      return;
+    }
 
     if (tab.mode === "data") {
       if (!tableMetaForDataTab(tab)) return;
