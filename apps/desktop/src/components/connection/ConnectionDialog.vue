@@ -26,6 +26,7 @@ import { applyParsedConnectionUrl, normalizeMongoConnectionString, parseConnecti
 import type { ConnectionDeepLinkDraft } from "@/lib/connectionDeepLink";
 import { connectionUrlPlaceholder as getUrlPlaceholder } from "@/lib/connectionPresentation";
 import { h2ConnectionModeForConfig, h2FileJdbcUrl, h2FilePathFromJdbcUrl, type H2ConnectionMode } from "@/lib/h2Connection";
+import { firstZooKeeperEndpoint, normalizeZooKeeperConnectString } from "@/lib/zookeeperConnection";
 import { isLocalFileTypeDb } from "@/lib/connectionFile";
 import { MQ_PINNED_VERSION_OPTIONS, pinnedVersionToSelection, selectionToPinnedVersion } from "@/lib/mqPinnedVersionOptions";
 import { mongodbAuthFailureHint, mongoUrlParam, setMongoUrlParam } from "@/lib/mongoConnectionOptions";
@@ -426,6 +427,7 @@ const driverProfiles: Record<
   },
   qdrant: { type: "qdrant", port: 6333, user: "", label: "Qdrant", icon: "qdrant" },
   milvus: { type: "milvus", port: 19530, user: "root", label: "Milvus", icon: "milvus" },
+  weaviate: { type: "weaviate", port: 8080, user: "", label: "Weaviate", icon: "weaviate" },
   mariadb: { type: "mysql", port: 3306, user: "root", label: "MariaDB", icon: "mariadb" },
   tidb: { type: "mysql", port: 4000, user: "root", label: "TiDB", icon: "tidb" },
   oceanbase: { type: "mysql", port: 2881, user: "root", label: "OceanBase", icon: "oceanbase" },
@@ -522,6 +524,7 @@ const driverProfiles: Record<
   xugu: { type: "xugu", port: 5138, user: "", label: "虚谷 XuguDB", icon: "xugu" },
   iotdb: { type: "iotdb", port: 6667, user: "root", label: "Apache IoTDB", icon: "iotdb" },
   etcd: { type: "etcd", port: 2379, user: "", label: "etcd", icon: "etcd" },
+  zookeeper: { type: "zookeeper", port: 2181, user: "", label: "Apache ZooKeeper", icon: "zookeeper" },
   mq: { type: "mq", port: 8080, user: "", label: "Apache Pulsar", icon: "pulsar", host: "127.0.0.1" },
   nacos: { type: "nacos", port: 8848, user: "nacos", label: "Nacos", icon: "nacos", host: "127.0.0.1" },
   iris: { type: "iris", port: 1972, user: "_SYSTEM", label: "IRIS", icon: "iris" },
@@ -798,6 +801,14 @@ function applyProfile(val: string, preserveConnectionFields = false) {
       form.value.database = undefined;
       form.value.connection_string = undefined;
     }
+    if (profile.type === "zookeeper") {
+      form.value.database = undefined;
+      form.value.connection_string = "";
+      form.value.ssl = false;
+      form.value.ca_cert_path = "";
+      form.value.client_cert_path = "";
+      form.value.client_key_path = "";
+    }
     if (profile.type === "nacos") {
       resetNacosFields();
       form.value.database = undefined;
@@ -1006,6 +1017,7 @@ const iconTypeMap: Record<string, string> = {
   elasticsearch: "elasticsearch",
   qdrant: "qdrant",
   milvus: "milvus",
+  weaviate: "weaviate",
   mariadb: "mariadb",
   tidb: "tidb",
   oceanbase: "oceanbase",
@@ -1040,6 +1052,7 @@ const iconTypeMap: Record<string, string> = {
   xugu: "xugu",
   iotdb: "iotdb",
   etcd: "etcd",
+  zookeeper: "zookeeper",
   mq: "mq",
   nacos: "nacos",
   dm: "dm",
@@ -1073,6 +1086,7 @@ const dbOptions: DbOption[] = [
   { value: "elasticsearch", label: "Elasticsearch" },
   { value: "qdrant", label: "Qdrant" },
   { value: "milvus", label: "Milvus" },
+  { value: "weaviate", label: "Weaviate" },
   { value: "dm", label: "DM (Dameng)" },
   { value: "opengauss", label: "openGauss" },
   { value: "turso", label: "Turso" },
@@ -1123,6 +1137,7 @@ const dbOptions: DbOption[] = [
   { value: "xugu", label: "虚谷 XuguDB" },
   { value: "iotdb", label: "Apache IoTDB" },
   { value: "etcd", label: "etcd" },
+  { value: "zookeeper", label: "Apache ZooKeeper" },
   { value: "mq", label: "Apache Pulsar" },
   { value: "nacos", label: "Nacos" },
   { value: "influxdb", label: "InfluxDB" },
@@ -1178,7 +1193,7 @@ const sqliteExtensionPaths = computed({
     form.value.url_params = setSqliteExtensionPaths(form.value.url_params, value);
   },
 });
-const tlsCapableDatabaseTypes = new Set<DatabaseType>(["mysql", "postgres", "redshift", "gaussdb", "kwdb", "opengauss", "questdb", "redis", "etcd", "clickhouse", "elasticsearch", "qdrant", "milvus", "influxdb"]);
+const tlsCapableDatabaseTypes = new Set<DatabaseType>(["mysql", "postgres", "redshift", "gaussdb", "kwdb", "opengauss", "questdb", "redis", "etcd", "clickhouse", "elasticsearch", "qdrant", "milvus", "weaviate", "influxdb"]);
 const supportsTlsToggle = computed(() => tlsCapableDatabaseTypes.has(form.value.db_type));
 const supportsCaCertificatePath = computed(() => form.value.db_type === "clickhouse");
 const supportsGenericUrlParams = computed(() => form.value.db_type !== "manticoresearch");
@@ -1248,6 +1263,12 @@ const etcdEndpointsLines = computed({
     form.value.etcd_endpoints = normalizeEndpointLines(value);
   },
 });
+const zookeeperConnectString = computed({
+  get: () => form.value.connection_string || "",
+  set: (value: string) => {
+    form.value.connection_string = normalizeZooKeeperConnectString(value);
+  },
+});
 const canUseTransportLayers = computed(() => form.value.db_type !== "sqlite" && form.value.db_type !== "access" && !isH2FileMode.value);
 const shouldShowAgentDriverInstallHint = computed(() => showAgentDriverInstallHint(form.value.db_type, agentDrivers.value, form.value.driver_profile));
 const h2DriverMissing = computed(() => form.value.db_type === "h2" && isH2FileMode.value && agentDrivers.value.find((d) => d.db_type === "h2")?.installed !== true);
@@ -1281,6 +1302,7 @@ const testResultMessage = computed(() => {
 });
 const hasRequiredConnectionTarget = computed(() => {
   if (form.value.db_type === "mq") return !!mqAdminUrl.value.trim();
+  if (form.value.db_type === "zookeeper") return !!(form.value.host || form.value.connection_string || connectionUrlInput.value.trim());
   if (form.value.db_type === "nacos") return !!nacosServerAddr.value.trim();
   if (isH2FileMode.value) return !!(form.value.host.trim() || h2FilePathFromJdbcUrl(form.value.connection_string));
   return !!(form.value.host || (mongoUseUrl.value && form.value.connection_string) || (form.value.db_type === "jdbc" && form.value.connection_string) || connectionUrlInput.value.trim());
@@ -1496,6 +1518,17 @@ function connectionConfigForSubmit(id: string): ConnectionConfig {
   }
   if (config.db_type === "redis") {
     config.redis_key_separator = config.redis_key_separator?.trim() ?? ":";
+  }
+  if (config.db_type === "zookeeper") {
+    const normalizedConnectString = normalizeZooKeeperConnectString(config.connection_string || "");
+    config.connection_string = normalizedConnectString || undefined;
+    const firstEndpoint = firstZooKeeperEndpoint(normalizedConnectString || (config.host ? `${config.host}:${config.port || 2181}` : ""));
+    if (firstEndpoint) {
+      config.host = firstEndpoint.host;
+      config.port = firstEndpoint.port;
+    }
+    config.database = undefined;
+    config.ssl = false;
   }
   if (config.db_type === "etcd") {
     config.etcd_endpoints = normalizeEndpointLines(config.etcd_endpoints || "");
@@ -2139,9 +2172,9 @@ function validateTransportLayers(config: LegacyConnectionConfig) {
     }
     if (layer.type === "ssh") {
       if (!layer.user?.trim()) throw new Error(t("connection.sshHopInvalidUser", { hop: label }));
-      if (!layer.password?.trim() && !layer.key_path?.trim() && !layer.use_ssh_agent) {
-        throw new Error(t("connection.sshHopInvalidAuth", { hop: label }));
-      }
+      // Auth credentials are optional: the backend probes "none" authentication
+      // first, so hops that require no credential (e.g. passwordless SSH proxies)
+      // are valid with password, key, and agent all left empty.
       const timeout = Number(layer.connect_timeout_secs);
       if (!Number.isFinite(timeout) || timeout < 1 || timeout > 300) {
         throw new Error(t("connection.sshHopInvalidTimeout", { hop: label }));
@@ -3067,6 +3100,37 @@ function openExternalUrl(url: string) {
                       />
                       <p class="text-xs text-muted-foreground">
                         {{ t("connection.etcdEndpointsHint") }}
+                      </p>
+                    </div>
+                  </div>
+                  <div class="grid grid-cols-4 items-center gap-4">
+                    <Label class="text-right">{{ t("connection.user") }}</Label>
+                    <Input v-model="form.username" class="col-span-3" />
+                  </div>
+                  <div class="grid grid-cols-4 items-center gap-4">
+                    <Label class="text-right">{{ t("connection.password") }}</Label>
+                    <PasswordInput v-model="form.password" class="col-span-3" />
+                  </div>
+                </template>
+
+                <!-- ZooKeeper: host, connect string, user, password -->
+                <template v-else-if="form.db_type === 'zookeeper'">
+                  <div class="grid grid-cols-4 items-center gap-4">
+                    <Label class="text-right">{{ t("connection.host") }}</Label>
+                    <Input v-model="form.host" class="col-span-2" placeholder="127.0.0.1" />
+                    <Input v-model.number="form.port" type="number" class="col-span-1" />
+                  </div>
+                  <div class="grid grid-cols-4 items-start gap-4">
+                    <Label class="text-right mt-2">{{ t("connection.zookeeperConnectString") }}</Label>
+                    <div class="col-span-3 space-y-1">
+                      <textarea
+                        v-model="zookeeperConnectString"
+                        class="flex min-h-[76px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        placeholder="127.0.0.1:2181&#10;zk-2:2181"
+                        spellcheck="false"
+                      />
+                      <p class="text-xs text-muted-foreground">
+                        {{ t("connection.zookeeperConnectStringHint") }}
                       </p>
                     </div>
                   </div>

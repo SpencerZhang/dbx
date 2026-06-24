@@ -57,6 +57,7 @@ import type {
   KvValue,
   KvListPrefixResponse,
   KvGetResponse,
+  KvPutOptions,
   KvPutResponse,
   KvDeleteResponse,
   MongoDocumentResult,
@@ -74,6 +75,7 @@ import type {
   ExportProgress,
   TableExportRequest,
   TableExportProgress,
+  QueryResultExportRequest,
   TableCsvExportOptions,
   XlsxCellValue,
   QueryPaginationExecutionPlanOptions,
@@ -1117,6 +1119,10 @@ export async function readExternalSqlFile(_path: string): Promise<string> {
   throw new Error("Opening external SQL file paths is only available in the desktop app");
 }
 
+export async function writeExternalSqlFile(_path: string, _content: string): Promise<void> {
+  throw new Error("Saving external SQL file paths is only available in the desktop app");
+}
+
 // ---------------------------------------------------------------------------
 // Data Transfer
 // ---------------------------------------------------------------------------
@@ -1324,6 +1330,64 @@ export async function cancelTableExport(exportId: string): Promise<void> {
   return post("/api/export/table/cancel", { exportId });
 }
 
+export async function startQueryResultExport(request: QueryResultExportRequest, onProgress: (progress: TableExportProgress) => void): Promise<TableExportProgress> {
+  const { exportId } = request;
+
+  return new Promise((resolve, reject) => {
+    let started = false;
+    let settled = false;
+    const eventSource = new EventSource(`/api/export/query-result/progress/${exportId}`);
+
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      eventSource.close();
+      callback();
+    };
+
+    eventSource.onopen = () => {
+      if (started) return;
+      started = true;
+      post("/api/export/query-result", { request }).catch((error) => {
+        finish(() => reject(error));
+      });
+    };
+
+    eventSource.onmessage = (event) => {
+      const progress: TableExportProgress = JSON.parse(event.data);
+      onProgress(progress);
+      if (progress.status === "Done" || progress.status === "Error" || progress.status === "Cancelled") {
+        if (progress.status === "Error") {
+          finish(() => reject(new Error(progress.errorMessage || "Export failed")));
+        } else if (progress.status === "Done") {
+          downloadQueryResultExportFile(exportId, request.format);
+          finish(() => resolve(progress));
+        } else {
+          finish(() => resolve(progress));
+        }
+      }
+    };
+
+    eventSource.onerror = () => {
+      finish(() => reject(new Error("Export progress connection lost")));
+    };
+  });
+}
+
+function downloadQueryResultExportFile(exportId: string, format: string): void {
+  const a = document.createElement("a");
+  a.href = `/api/export/query-result/download/${exportId}`;
+  a.download = `query_result_export_${exportId}.${format}`;
+  a.click();
+}
+
+export async function cancelQueryResultExport(exportId: string, executionId?: string): Promise<void> {
+  return post("/api/export/query-result/cancel", {
+    exportId,
+    ...(executionId ? { executionId } : {}),
+  });
+}
+
 export async function exportQueryResultCsv(filePath: string, columns: string[], rows: readonly (readonly XlsxCellValue[])[]): Promise<void> {
   const { formatCsv } = await import("./exportFormats");
   const content = formatCsv(columns, rows as (string | number | boolean | null)[][]);
@@ -1526,6 +1590,26 @@ export async function etcdPut(connectionId: string, key: string, value: KvValue,
 
 export async function etcdDelete(connectionId: string, key: string): Promise<KvDeleteResponse> {
   return post("/api/etcd/delete", { connectionId, key });
+}
+
+// ---------------------------------------------------------------------------
+// ZooKeeper
+// ---------------------------------------------------------------------------
+
+export async function zookeeperListPrefix(connectionId: string, prefix: string, limit: number, continuation?: string | null): Promise<KvListPrefixResponse> {
+  return post("/api/zookeeper/list-prefix", { connectionId, prefix, limit, continuation });
+}
+
+export async function zookeeperGet(connectionId: string, key: string): Promise<KvGetResponse> {
+  return post("/api/zookeeper/get", { connectionId, key });
+}
+
+export async function zookeeperPut(connectionId: string, key: string, value: KvValue, options?: KvPutOptions | null): Promise<KvPutResponse> {
+  return post("/api/zookeeper/put", { connectionId, key, value, options: options ?? null });
+}
+
+export async function zookeeperDelete(connectionId: string, key: string): Promise<KvDeleteResponse> {
+  return post("/api/zookeeper/delete", { connectionId, key });
 }
 
 // ---------------------------------------------------------------------------

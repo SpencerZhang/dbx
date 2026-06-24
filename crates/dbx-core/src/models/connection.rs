@@ -258,6 +258,8 @@ pub enum DatabaseType {
     Qdrant,
     #[serde(rename = "milvus")]
     Milvus,
+    #[serde(rename = "weaviate")]
+    Weaviate,
     Doris,
     #[serde(rename = "starrocks")]
     StarRocks,
@@ -307,6 +309,8 @@ pub enum DatabaseType {
     Xugu,
     Iotdb,
     Etcd,
+    #[serde(rename = "zookeeper")]
+    ZooKeeper,
     Nacos,
     #[serde(rename = "iris")]
     Iris,
@@ -733,7 +737,7 @@ impl ConnectionConfig {
                 format!("mongodb://{host}:{port}{db_part}{suffix}")
             }
             DatabaseType::Oracle => format!("oracle://{host}:{port}{db_part}"),
-            DatabaseType::Elasticsearch | DatabaseType::Qdrant | DatabaseType::Milvus => {
+            DatabaseType::Elasticsearch | DatabaseType::Qdrant | DatabaseType::Milvus | DatabaseType::Weaviate => {
                 let scheme = if self.ssl { "https" } else { "http" };
                 format!("{scheme}://{host}:{port}")
             }
@@ -786,6 +790,9 @@ impl ConnectionConfig {
             }
             DatabaseType::Etcd => {
                 format!("etcd://{host}:{port}")
+            }
+            DatabaseType::ZooKeeper => {
+                format!("zookeeper://{host}:{port}")
             }
             DatabaseType::Iris => format!("iris://{host}:{port}{db_part}"),
             DatabaseType::InfluxDb => {
@@ -869,7 +876,7 @@ impl ConnectionConfig {
             DatabaseType::Oracle => {
                 format!("oracle://{}:{}@{host}:{port}{db_part}", username, password)
             }
-            DatabaseType::Elasticsearch | DatabaseType::Qdrant | DatabaseType::Milvus => {
+            DatabaseType::Elasticsearch | DatabaseType::Qdrant | DatabaseType::Milvus | DatabaseType::Weaviate => {
                 let scheme = if self.ssl { "https" } else { "http" };
                 format!("{scheme}://{host}:{port}")
             }
@@ -987,6 +994,13 @@ impl ConnectionConfig {
                     format!("etcd://{host}:{port}")
                 } else {
                     format!("etcd://{}:{}@{host}:{port}", username, password)
+                }
+            }
+            DatabaseType::ZooKeeper => {
+                if self.username.is_empty() {
+                    format!("zookeeper://{host}:{port}")
+                } else {
+                    format!("zookeeper://{}:{}@{host}:{port}", username, password)
                 }
             }
             DatabaseType::Iris => {
@@ -1567,6 +1581,27 @@ mod tests {
         config.db_type = DatabaseType::MongoDb;
         config.port = 17000;
         config
+    }
+
+    #[test]
+    fn zookeeper_database_type_uses_stable_wire_name() {
+        assert_eq!(serde_json::to_string(&DatabaseType::ZooKeeper).unwrap(), "\"zookeeper\"");
+        assert_eq!(serde_json::from_str::<DatabaseType>("\"zookeeper\"").unwrap(), DatabaseType::ZooKeeper);
+    }
+
+    #[test]
+    fn zookeeper_connection_url_uses_zookeeper_scheme() {
+        let mut config = mysql_config("", "", None);
+        config.db_type = DatabaseType::ZooKeeper;
+        config.host = "zk.local".to_string();
+        config.port = 2181;
+
+        assert_eq!(config.connection_url_with_host("zk.local", 2181), "zookeeper://zk.local:2181");
+
+        config.username = "digest".to_string();
+        config.password = "secret".to_string();
+
+        assert_eq!(config.connection_url_with_host("zk.local", 2181), "zookeeper://digest:secret@zk.local:2181");
     }
 
     #[test]

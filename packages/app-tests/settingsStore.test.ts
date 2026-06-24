@@ -55,10 +55,51 @@ test("normalizes saved query result page size", () => {
   assert.equal(normalizeEditorSettings({ pageSize: 0 }).pageSize, 100);
 });
 
-test("defaults export batch size to 10000 rows", () => {
-  assert.equal(DEFAULT_EDITOR_SETTINGS.exportBatchSize, 10000);
-  assert.equal(normalizeEditorSettings({}).exportBatchSize, 10000);
+test("defaults export batch size to 2000 rows", () => {
+  assert.equal(DEFAULT_EDITOR_SETTINGS.exportBatchSize, 2000);
+  assert.equal(normalizeEditorSettings({}).exportBatchSize, 2000);
   assert.equal(normalizeEditorSettings({ exportBatchSize: 2000 }).exportBatchSize, 2000);
+});
+
+test("migrates the legacy saved export batch default to 2000 once", () => {
+  withMockLocalStorage({ "dbx-editor-settings": JSON.stringify({ exportBatchSize: 10000 }) }, () => {
+    setActivePinia(createPinia());
+    const store = useSettingsStore();
+
+    assert.equal(store.editorSettings.exportBatchSize, 2000);
+    assert.equal(localStorage.getItem("dbx-export-batch-size-default-migrated-v1"), "1");
+    assert.equal(JSON.parse(localStorage.getItem("dbx-editor-settings") || "{}").exportBatchSize, 2000);
+  });
+});
+
+test("keeps a manually saved 10000 export batch size after migration", () => {
+  withMockLocalStorage(
+    {
+      "dbx-editor-settings": JSON.stringify({ exportBatchSize: 10000 }),
+      "dbx-export-batch-size-default-migrated-v1": "1",
+    },
+    () => {
+      setActivePinia(createPinia());
+      const store = useSettingsStore();
+
+      assert.equal(store.editorSettings.exportBatchSize, 10000);
+    },
+  );
+});
+
+test("defaults query-result export row limit settings", () => {
+  assert.equal(DEFAULT_EDITOR_SETTINGS.exportRowLimitEnabled, true);
+  assert.equal(DEFAULT_EDITOR_SETTINGS.exportRowLimit, 100000);
+  assert.equal(DEFAULT_EDITOR_SETTINGS.queryExportKeysetOptimizationEnabled, true);
+  assert.equal(normalizeEditorSettings({}).exportRowLimitEnabled, true);
+  assert.equal(normalizeEditorSettings({}).exportRowLimit, 100000);
+  assert.equal(normalizeEditorSettings({}).queryExportKeysetOptimizationEnabled, true);
+  assert.equal(normalizeEditorSettings({ exportRowLimitEnabled: false }).exportRowLimitEnabled, false);
+  assert.equal(normalizeEditorSettings({ exportRowLimitEnabled: "nope" as any }).exportRowLimitEnabled, true);
+  assert.equal(normalizeEditorSettings({ exportRowLimit: 250000 }).exportRowLimit, 250000);
+  assert.equal(normalizeEditorSettings({ exportRowLimit: 10 }).exportRowLimit, 100000);
+  assert.equal(normalizeEditorSettings({ queryExportKeysetOptimizationEnabled: false }).queryExportKeysetOptimizationEnabled, false);
+  assert.equal(normalizeEditorSettings({ queryExportKeysetOptimizationEnabled: "nope" as any }).queryExportKeysetOptimizationEnabled, true);
 });
 
 test("normalizes editor theme settings", () => {

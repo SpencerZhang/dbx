@@ -214,6 +214,9 @@ const editSidebarHiddenTablePrefixes = ref(settingsStore.editorSettings.sidebarH
 const editSidebarHideTableComments = ref(settingsStore.editorSettings.sidebarHideTableComments);
 const editSidebarAllowHorizontalScroll = ref(settingsStore.editorSettings.sidebarAllowHorizontalScroll);
 const editExportBatchSize = ref(settingsStore.editorSettings.exportBatchSize);
+const editExportRowLimitEnabled = ref(settingsStore.editorSettings.exportRowLimitEnabled);
+const editExportRowLimit = ref(settingsStore.editorSettings.exportRowLimit);
+const editQueryExportKeysetOptimizationEnabled = ref(settingsStore.editorSettings.queryExportKeysetOptimizationEnabled);
 const editToolbarItems = ref({ ...settingsStore.editorSettings.toolbarItems });
 const redisScanPageSizeOptions = [200, 1000, 5000, 10000];
 const systemFonts = ref<string[]>([]);
@@ -480,6 +483,9 @@ watch(
       editSidebarHideTableComments.value = settingsStore.editorSettings.sidebarHideTableComments;
       editSidebarAllowHorizontalScroll.value = settingsStore.editorSettings.sidebarAllowHorizontalScroll;
       editExportBatchSize.value = settingsStore.editorSettings.exportBatchSize;
+      editExportRowLimitEnabled.value = settingsStore.editorSettings.exportRowLimitEnabled;
+      editExportRowLimit.value = settingsStore.editorSettings.exportRowLimit;
+      editQueryExportKeysetOptimizationEnabled.value = settingsStore.editorSettings.queryExportKeysetOptimizationEnabled;
       editToolbarItems.value = { ...settingsStore.editorSettings.toolbarItems };
       editSnippets.value = settingsStore.editorSettings.snippets.map((s) => ({ ...s }));
     }
@@ -538,6 +544,9 @@ function hasChanges(): boolean {
     editSidebarHideTableComments.value !== settingsStore.editorSettings.sidebarHideTableComments ||
     editSidebarAllowHorizontalScroll.value !== settingsStore.editorSettings.sidebarAllowHorizontalScroll ||
     editExportBatchSize.value !== settingsStore.editorSettings.exportBatchSize ||
+    editExportRowLimitEnabled.value !== settingsStore.editorSettings.exportRowLimitEnabled ||
+    editExportRowLimit.value !== settingsStore.editorSettings.exportRowLimit ||
+    editQueryExportKeysetOptimizationEnabled.value !== settingsStore.editorSettings.queryExportKeysetOptimizationEnabled ||
     JSON.stringify(editToolbarItems.value) !== JSON.stringify(settingsStore.editorSettings.toolbarItems) ||
     JSON.stringify(normalizeSidebarHiddenTablePrefixes(editSidebarHiddenTablePrefixes.value)) !== JSON.stringify(settingsStore.editorSettings.sidebarHiddenTablePrefixes) ||
     JSON.stringify(editSnippets.value) !== JSON.stringify(settingsStore.editorSettings.snippets)
@@ -579,6 +588,9 @@ async function persistSettings() {
     sidebarAllowHorizontalScroll: editSidebarAllowHorizontalScroll.value,
     sidebarHiddenTablePrefixes: normalizeSidebarHiddenTablePrefixes(editSidebarHiddenTablePrefixes.value),
     exportBatchSize: editExportBatchSize.value,
+    exportRowLimitEnabled: editExportRowLimitEnabled.value,
+    exportRowLimit: editExportRowLimit.value,
+    queryExportKeysetOptimizationEnabled: editQueryExportKeysetOptimizationEnabled.value,
     toolbarItems: { ...editToolbarItems.value },
     snippets: editSnippets.value,
   });
@@ -648,6 +660,9 @@ function resetDefaultsForTab(tab: SettingsCategory) {
     editInfiniteScrollMaxRows.value = DEFAULT_EDITOR_SETTINGS.infiniteScrollMaxRows;
     editTableColumnTemplateRows.value = tableColumnTemplateRowsFromSettings(DEFAULT_EDITOR_SETTINGS.tableColumnTemplateFields);
     editExportBatchSize.value = DEFAULT_EDITOR_SETTINGS.exportBatchSize;
+    editExportRowLimitEnabled.value = DEFAULT_EDITOR_SETTINGS.exportRowLimitEnabled;
+    editExportRowLimit.value = DEFAULT_EDITOR_SETTINGS.exportRowLimit;
+    editQueryExportKeysetOptimizationEnabled.value = DEFAULT_EDITOR_SETTINGS.queryExportKeysetOptimizationEnabled;
   } else if (tab === "redis") {
     editRedisScanPageSize.value = DEFAULT_EDITOR_SETTINGS.redisScanPageSize;
   } else if (tab === "shortcuts") {
@@ -696,6 +711,9 @@ function resetAllDefaults() {
   editSidebarAllowHorizontalScroll.value = DEFAULT_EDITOR_SETTINGS.sidebarAllowHorizontalScroll;
   editSidebarHiddenTablePrefixes.value = DEFAULT_EDITOR_SETTINGS.sidebarHiddenTablePrefixes.join("\n");
   editExportBatchSize.value = DEFAULT_EDITOR_SETTINGS.exportBatchSize;
+  editExportRowLimitEnabled.value = DEFAULT_EDITOR_SETTINGS.exportRowLimitEnabled;
+  editExportRowLimit.value = DEFAULT_EDITOR_SETTINGS.exportRowLimit;
+  editQueryExportKeysetOptimizationEnabled.value = DEFAULT_EDITOR_SETTINGS.queryExportKeysetOptimizationEnabled;
   editToolbarItems.value = { ...DEFAULT_EDITOR_SETTINGS.toolbarItems };
   editSnippets.value = DEFAULT_SQL_SNIPPETS.map((s) => ({ ...s }));
 }
@@ -2511,6 +2529,29 @@ watch(
                     </datalist>
                     <span class="text-xs text-muted-foreground">{{ t("settings.exportBatchSizeDescription") }}</span>
                   </div>
+                </div>
+                <div class="flex items-start justify-between gap-3">
+                  <div class="space-y-0.5">
+                    <Label for="export-row-limit-enabled">{{ t("settings.exportRowLimitEnabled") }}</Label>
+                    <p class="text-xs text-muted-foreground">{{ t("settings.exportRowLimitEnabledDescription") }}</p>
+                  </div>
+                  <Switch id="export-row-limit-enabled" v-model="editExportRowLimitEnabled" class="mt-0.5" />
+                </div>
+                <div class="space-y-2">
+                  <Label for="export-row-limit">{{ t("settings.exportRowLimit") }}</Label>
+                  <div class="flex items-center gap-3">
+                    <Input id="export-row-limit" type="number" min="100" max="2147483647" step="100" v-model.number="editExportRowLimit" :disabled="!editExportRowLimitEnabled" class="h-9 w-32 [&::-webkit-inner-spin-button]:appearance-none" />
+                    <span class="text-xs text-muted-foreground">
+                      {{ editExportRowLimitEnabled ? t("settings.exportRowLimitDescription") : t("settings.exportRowLimitUnlimited") }}
+                    </span>
+                  </div>
+                </div>
+                <div class="flex items-start justify-between gap-3">
+                  <div class="space-y-0.5">
+                    <Label for="query-export-keyset-enabled">{{ t("settings.queryExportKeysetOptimizationEnabled") }}</Label>
+                    <p class="text-xs text-muted-foreground">{{ t("settings.queryExportKeysetOptimizationEnabledDescription") }}</p>
+                  </div>
+                  <Switch id="query-export-keyset-enabled" v-model="editQueryExportKeysetOptimizationEnabled" class="mt-0.5" />
                 </div>
               </div>
 

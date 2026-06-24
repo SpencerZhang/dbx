@@ -228,6 +228,7 @@ export const pendingOpenSqlFiles = forward("pendingOpenSqlFiles");
 export const pendingOpenDbFiles = forward("pendingOpenDbFiles");
 export const pendingOpenConnectionLinks = forward("pendingOpenConnectionLinks");
 export const readExternalSqlFile = forward("readExternalSqlFile");
+export const writeExternalSqlFile = forward("writeExternalSqlFile");
 
 // Nacos
 export const nacosTestConnection = forward("nacosTestConnection");
@@ -267,6 +268,8 @@ export const exportQueryResultJson = forward("exportQueryResultJson");
 export const exportQueryResultMarkdown = forward("exportQueryResultMarkdown");
 export const startTableExport = forward("startTableExport");
 export const cancelTableExport = forward("cancelTableExport");
+export const startQueryResultExport = forward("startQueryResultExport");
+export const cancelQueryResultExport = forward("cancelQueryResultExport");
 
 // Redis
 export const redisListDatabases = forward("redisListDatabases");
@@ -307,6 +310,12 @@ export const etcdListPrefix = forward("etcdListPrefix");
 export const etcdGet = forward("etcdGet");
 export const etcdPut = forward("etcdPut");
 export const etcdDelete = forward("etcdDelete");
+
+// ZooKeeper
+export const zookeeperListPrefix = forward("zookeeperListPrefix");
+export const zookeeperGet = forward("zookeeperGet");
+export const zookeeperPut = forward("zookeeperPut");
+export const zookeeperDelete = forward("zookeeperDelete");
 
 // Message Queue
 export const mqTestConnection = forward("mqTestConnection");
@@ -432,6 +441,9 @@ export type {
   KvKeySummary,
   KvListPrefixResponse,
   KvGetResponse,
+  KvWriteMode,
+  KvCreateMode,
+  KvPutOptions,
   KvPutResponse,
   KvDeleteResponse,
   MongoDocumentResult,
@@ -456,5 +468,6 @@ export type {
   TableExportProgress,
   TableExportStatus,
   TableExportRequest,
+  QueryResultExportRequest,
   AgentEvent,
 } from "./tauri";
