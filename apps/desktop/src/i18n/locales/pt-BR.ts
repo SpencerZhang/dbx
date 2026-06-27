@@ -330,6 +330,8 @@ export default {
     proxyUsernamePlaceholder: "Opcional",
     proxyPassword: "Senha do Proxy",
     proxyPasswordPlaceholder: "Opcional",
+    dremioArrowFlightSqlMode: "Arrow Flight SQL",
+    dremioLegacyJdbcMode: "JDBC legado",
     jdbcUrl: "URL JDBC",
     jdbcUrlPlaceholder: "jdbc:postgresql://localhost:5432/database",
     jdbcDriverClass: "Classe do Driver (opcional)",
