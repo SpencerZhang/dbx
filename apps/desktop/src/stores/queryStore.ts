@@ -407,6 +407,20 @@ export const useQueryStore = defineStore("query", () => {
     }
   }
 
+  function clearResultRunPayload(run: NonNullable<QueryTab["resultRuns"]>[number], options: { evicted?: boolean } = {}) {
+    run.result = undefined;
+    run.results = undefined;
+    run.resultLocalSortOriginalRows = undefined;
+    run.resultSessionId = undefined;
+    run.queryAnalysis = undefined;
+    run.querySourceColumns = undefined;
+    run.queryEditabilityReason = undefined;
+    run.mongoEditTarget = undefined;
+    run.tableMeta = undefined;
+    run.resultEvicted = options.evicted ? true : undefined;
+    run.resultCacheState = options.evicted ? "disk" : undefined;
+  }
+
   function projectResultRun(tab: QueryTab, run: NonNullable<QueryTab["resultRuns"]>[number]) {
     const activeIndex = run.activeResultIndex ?? 0;
     tab.activeResultRunId = run.id;
@@ -468,10 +482,11 @@ export const useQueryStore = defineStore("query", () => {
     const run = await restoreResultRunPayload(tab, runId);
     if (!run?.result && !run?.results?.length) return false;
     projectResultRun(tab, run);
+    evictInactiveResultRunPayloads(tab);
     return true;
   }
 
-  function removeResultRun(id: string, runId: string) {
+  async function removeResultRun(id: string, runId: string) {
     const tab = tabs.value.find((t) => t.id === id);
     const runIndex = tab?.resultRuns?.findIndex((run) => run.id === runId) ?? -1;
     if (!tab || !tab.resultRuns || runIndex < 0) return false;
@@ -484,10 +499,11 @@ export const useQueryStore = defineStore("query", () => {
 
     if (!wasActive) return true;
 
-    const nextRun = remainingRuns[Math.min(runIndex, remainingRuns.length - 1)];
-    if (nextRun) {
-      projectResultRun(tab, nextRun);
-      return true;
+    const adjacentIndex = Math.min(runIndex, remainingRuns.length - 1);
+    for (let offset = 0; offset < remainingRuns.length; offset += 1) {
+      const candidate = remainingRuns[(adjacentIndex + offset) % remainingRuns.length];
+      // Disk-backed runs may have missing or unreadable snapshots; keep searching before clearing output.
+      if (candidate && (await setActiveResultRun(id, candidate.id))) return true;
     }
 
     tab.activeResultRunId = undefined;
@@ -499,11 +515,11 @@ export const useQueryStore = defineStore("query", () => {
     return (tab.resultRuns?.reduce((max, run) => Math.max(max, run.sequence), 0) ?? 0) + 1;
   }
 
-  function persistResultRun(tab: QueryTab, run: NonNullable<QueryTab["resultRuns"]>[number]) {
+  function persistResultRun(tab: QueryTab, run: NonNullable<QueryTab["resultRuns"]>[number]): Promise<boolean> {
     const key = run.resultCacheKey ?? resultRunCacheKey(tab.id, run.id);
     run.resultCacheKey = key;
     run.resultCacheState = "memory";
-    void writeTabResultSnapshot(key, {
+    return writeTabResultSnapshot(key, {
       result: run.result,
       results: run.results,
       activeResultIndex: run.activeResultIndex,
@@ -520,6 +536,22 @@ export const useQueryStore = defineStore("query", () => {
       resultTotalRowCount: run.resultTotalRowCount,
       cachedAt: Date.now(),
     });
+  }
+
+  function evictInactiveResultRunPayloads(tab: QueryTab) {
+    const activeRunId = tab.activeResultRunId;
+    if (!activeRunId || !tab.resultRuns?.length) return;
+
+    for (const run of tab.resultRuns) {
+      if (run.id === activeRunId || !resultRunHasPayload(run)) continue;
+      const runId = run.id;
+      void persistResultRun(tab, run).then((cached) => {
+        const currentRun = tab.resultRuns?.find((item) => item.id === runId);
+        if (!cached || !currentRun || currentRun.id === tab.activeResultRunId || !resultRunHasPayload(currentRun)) return;
+        if (tab.result === currentRun.result || (currentRun.results && tab.results === currentRun.results)) return;
+        clearResultRunPayload(currentRun, { evicted: true });
+      });
+    }
   }
 
   function captureDisplayedResultRun(tab: QueryTab, sql: string, createdAt = Date.now()) {
@@ -558,9 +590,10 @@ export const useQueryStore = defineStore("query", () => {
       mongoEditTarget: tab.mongoEditTarget,
       tableMeta: tab.tableMeta,
     };
-    persistResultRun(tab, run);
+    void persistResultRun(tab, run);
     tab.resultRuns = [...(tab.resultRuns ?? []), run];
     tab.activeResultRunId = run.id;
+    evictInactiveResultRunPayloads(tab);
   }
 
   function toggleResultAutoSave(id: string): boolean {
@@ -606,7 +639,7 @@ export const useQueryStore = defineStore("query", () => {
       mongoEditTarget: tab.mongoEditTarget,
       tableMeta: tab.tableMeta,
     };
-    persistResultRun(tab, run);
+    void persistResultRun(tab, run);
     tab.resultRuns[index] = run;
   }
 
@@ -3017,11 +3050,26 @@ export const useQueryStore = defineStore("query", () => {
     return true;
   }
 
+  async function hydrateResultRunsForArchive(tab: QueryTab, snapshot: NonNullable<ReturnType<typeof buildTabResultSnapshot>>) {
+    if (!snapshot.resultRuns?.length) return snapshot;
+    const resultRuns = await Promise.all(
+      snapshot.resultRuns.map(async (run) => {
+        if (resultRunHasPayload(run)) return run;
+        const cacheKey = run.resultCacheKey ?? tab.resultRuns?.find((item) => item.id === run.id)?.resultCacheKey;
+        if (!cacheKey) return run;
+        const cached = await readTabResultSnapshot(cacheKey);
+        return cached?.resultRuns?.find((item) => item.id === run.id) ?? run;
+      }),
+    );
+    return { ...snapshot, resultRuns };
+  }
+
   async function resultArchiveSnapshotForTab(tab: QueryTab) {
     let snapshot = buildTabResultSnapshot(tab);
     if (tab.resultCacheKey && (!snapshot || tab.resultEvicted || !resultSnapshotHasPayload(snapshot))) {
       snapshot = (await readTabResultSnapshot(tab.resultCacheKey)) ?? snapshot;
     }
+    if (snapshot) snapshot = await hydrateResultRunsForArchive(tab, snapshot);
     return snapshot && resultSnapshotHasPayload(snapshot) ? snapshot : undefined;
   }
 
