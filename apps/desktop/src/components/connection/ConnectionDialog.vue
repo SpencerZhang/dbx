@@ -40,6 +40,7 @@ import { copyToClipboard } from "@/lib/common/clipboard";
 import { configuredDatabaseProductName, connectionConfigFingerprint, databaseInfoCopyText, databaseInfoRows, normalizeDatabaseConnectionInfo, type DatabaseInfoField } from "@/lib/connection/connectionDatabaseInfo";
 import { agentDriverInstallKey, appendAgentDriverUpdateHint, hasAgentDriverUpdate, showAgentDriverInstallHint, type AgentDriverInstallState, type DriverStoreFocus } from "@/lib/connection/agentDriverInstallHint";
 import { prestoSqlBuiltinDriverPaths } from "@/lib/database/prestoSqlBuiltinDriver";
+import { JDBCX_DEFAULT_URL, JDBCX_DRIVER_PROFILE, JDBCX_JDBC_DRIVER_CLASS, ensureJdbcxRuntimeDrivers } from "@/lib/database/jdbcxBuiltinDriver";
 import { SQLITE_DATABASE_FILE_EXTENSIONS } from "@/lib/database/databaseFileDetection";
 import { connectionAttemptOriginalErrorMessage, connectionAttemptTimeoutMessage, connectionAttemptTimeoutMs } from "@/lib/connection/connectionAttemptTimeout";
 import { appendConnectionErrorHints } from "@/lib/connection/connectionErrorHints";
@@ -722,6 +723,7 @@ const driverProfiles: Record<
   db2: { type: "db2", port: 50000, user: "db2inst1", label: "IBM DB2", icon: "db2" },
   informix: { type: "informix", port: 9088, user: "informix", label: "Informix", icon: "informix" },
   dremio: { type: "jdbc", port: 31010, user: "", label: "Dremio", icon: "dremio" },
+  jdbcx: { type: "jdbc", port: 0, user: "", label: "JDBCX", icon: "jdbcx" },
   neo4j: { type: "neo4j", port: 7687, user: "neo4j", label: "Neo4j", icon: "neo4j" },
   cassandra: { type: "cassandra", port: 9042, user: "cassandra", label: "Cassandra", icon: "cassandra" },
   bigquery: {
@@ -1198,6 +1200,21 @@ async function ensureRequiredAgentDriverInstalled(config: ConnectionConfig): Pro
   }
 }
 
+async function ensureRequiredJdbcxDriverInstalled(config: ConnectionConfig): Promise<void> {
+  const result = await ensureJdbcxRuntimeDrivers(config, api, () => {
+    testResult.value = { ok: true, message: "Installing JDBC plugin..." };
+  });
+  if (!result) return;
+
+  jdbcMavenBundles.value = result.bundles;
+  addJdbcDriverPaths(result.paths);
+  form.value.jdbc_driver_paths = [...(config.jdbc_driver_paths ?? [])];
+  selectedJdbcDriverPath.value = result.paths.length > 0 ? (jdbcDriverSelectItems.value.find((item) => result.paths.every((path) => item.paths.includes(path)))?.id ?? "") : "";
+  if (result.paths.length > 0) {
+    jdbcManualClasspathOpen.value = false;
+  }
+}
+
 async function installSqlServerLegacyCompatibilityComponentIfNeeded(): Promise<boolean> {
   if (await api.isAgentInstalled(SQLSERVER_LEGACY_COMPATIBILITY_DRIVER_KEY)) return true;
 
@@ -1470,6 +1487,9 @@ function applyProfile(val: string, preserveConnectionFields = false) {
       if (val === "dremio") {
         resetDremioConnectionUrls();
         applyDremioConnectionMode("legacy");
+      } else if (val === JDBCX_DRIVER_PROFILE) {
+        form.value.connection_string = JDBCX_DEFAULT_URL;
+        form.value.jdbc_driver_class = JDBCX_JDBC_DRIVER_CLASS;
       }
     }
     if (profile.type === "prestosql") {
@@ -1836,6 +1856,7 @@ const iconTypeMap: Record<string, string> = {
   db2: "db2",
   informix: "informix",
   dremio: "dremio",
+  jdbcx: "jdbcx",
   iris: "iris",
   neo4j: "neo4j",
   cassandra: "cassandra",
@@ -1921,6 +1942,8 @@ const dbOptions: DbOption[] = [
   { value: "nacos", label: "Nacos" },
   { value: "influxdb", label: "InfluxDB" },
   { value: "iris", label: "IRIS" },
+  { value: "jdbc", label: "JDBC" },
+  { value: "jdbcx", label: "JDBCX" },
   { value: "manticoresearch", label: "Manticore Search" },
   { value: "custom_mysql", label: "Custom (MySQL)" },
   { value: "custom_postgres", label: "Custom (PostgreSQL)" },
@@ -2316,6 +2339,7 @@ async function testConnection() {
   try {
     config = connectionConfigForSubmit(editingId.value || draftTestConnectionId.value);
     await ensureRequiredAgentDriverInstalled(config);
+    await ensureRequiredJdbcxDriverInstalled(config);
     const result = await testConnectionWithTimeout(config, runId);
     if (runId !== testRunId) return;
     let successfulConfig = config;
@@ -2710,6 +2734,11 @@ function connectionConfigForSubmit(id: string, generatedName = ""): ConnectionCo
     if (config.db_type === "jdbc") {
       if (config.driver_profile === "dremio") {
         applyDremioJdbcMetadata(config);
+      } else if (config.driver_profile === JDBCX_DRIVER_PROFILE) {
+        config.host = "";
+        config.port = 0;
+        config.connection_string = config.connection_string?.trim() || JDBCX_DEFAULT_URL;
+        config.jdbc_driver_class = config.jdbc_driver_class?.trim() || JDBCX_JDBC_DRIVER_CLASS;
       } else {
         config.host = "";
         config.port = 0;
@@ -3629,11 +3658,13 @@ async function save() {
     if (editingId.value) {
       const updated = withSavedDatabaseInfo(connectionConfigForSubmit(editingId.value), databaseInfoForSave);
       await ensureRequiredAgentDriverInstalled(updated);
+      await ensureRequiredJdbcxDriverInstalled(updated);
       await store.updateConnection(updated);
       store.stopEditing();
     } else {
       const config = withSavedDatabaseInfo(connectionConfigForSubmit(draftTestConnectionId.value), databaseInfoForSave);
       await ensureRequiredAgentDriverInstalled(config);
+      await ensureRequiredJdbcxDriverInstalled(config);
       await store.addConnection(config);
       draftTestConnectionId.value = uuid();
       if (config.db_type === "jdbc") {
