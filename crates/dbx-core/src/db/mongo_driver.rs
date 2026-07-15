@@ -960,7 +960,7 @@ pub async fn update_document(
                 return Ok(result.modified_count);
             }
         }
-        return Ok(0);
+        return Err(no_matching_document_error(id));
     }
 
     for filter in document_id_filters(id) {
@@ -973,7 +973,12 @@ pub async fn update_document(
             return Ok(result.modified_count);
         }
     }
-    Ok(0)
+    Err(no_matching_document_error(id))
+}
+
+fn no_matching_document_error(id: &str) -> String {
+    let display = decode_string_document_id(id).unwrap_or_else(|| id.to_string());
+    format!("No document matched _id {display}. It may have been deleted or its _id changed since the query ran.")
 }
 
 fn is_update_operator_document(doc: &Document) -> bool {
@@ -1227,15 +1232,36 @@ pub async fn delete_document(client: &Client, database: &str, collection: &str, 
 
 fn document_id_filters(id: &str) -> Vec<Document> {
     if let Some(string_id) = decode_string_document_id(id) {
+        // The marker is emitted for an explicitly typed BSON string; do not reinterpret it as ObjectId.
         return vec![doc! { "_id": Bson::String(string_id) }];
     }
     if let Some(filter) = extended_json_document_id_filter(id) {
         return vec![filter];
     }
+    if let Some(numeric) = numeric_document_id(id) {
+        return vec![doc! { "_id": numeric }, doc! { "_id": Bson::String(id.to_string()) }];
+    }
+    object_id_then_string_filters(id)
+}
+
+fn object_id_then_string_filters(id: &str) -> Vec<Document> {
     let string_filter = doc! { "_id": Bson::String(id.to_string()) };
     match ObjectId::parse_str(id) {
         Ok(oid) => vec![doc! { "_id": Bson::ObjectId(oid) }, string_filter],
         Err(_) => vec![string_filter],
+    }
+}
+
+fn numeric_document_id(id: &str) -> Option<Bson> {
+    if id.trim() != id || id.is_empty() {
+        return None;
+    }
+    if let Ok(value) = id.parse::<i64>() {
+        return Some(Bson::Int64(value));
+    }
+    match id.parse::<f64>() {
+        Ok(value) if value.is_finite() => Some(Bson::Double(value)),
+        _ => None,
     }
 }
 
@@ -1688,6 +1714,35 @@ mod tests {
         assert!(
             matches!(filters[0].get("_id"), Some(Bson::String(value)) if value == r####"{"$numberLong":"2048938405781032962"}"####)
         );
+    }
+
+    #[test]
+    fn document_id_filters_keep_explicit_hex_string_ids_as_strings() {
+        let hex = "507f1f77bcf86cd799439011";
+        let id = format!("__dbx_mongo_string_id__{}", serde_json::to_string(hex).unwrap());
+        let filters = document_id_filters(&id);
+
+        assert_eq!(filters.len(), 1);
+        assert!(matches!(filters[0].get("_id"), Some(Bson::String(value)) if value == hex));
+    }
+
+    #[test]
+    fn document_id_filters_keep_explicit_object_ids_as_object_ids() {
+        let filters = document_id_filters(r#"{"$oid":"507f1f77bcf86cd799439011"}"#);
+
+        assert_eq!(filters.len(), 1);
+        assert!(
+            matches!(filters[0].get("_id"), Some(Bson::ObjectId(oid)) if oid.to_hex() == "507f1f77bcf86cd799439011")
+        );
+    }
+
+    #[test]
+    fn document_id_filters_match_numeric_ids_before_string() {
+        let filters = document_id_filters("42");
+
+        assert_eq!(filters.len(), 2);
+        assert!(matches!(filters[0].get("_id"), Some(Bson::Int64(42))));
+        assert!(matches!(filters[1].get("_id"), Some(Bson::String(value)) if value == "42"));
     }
 
     #[test]
