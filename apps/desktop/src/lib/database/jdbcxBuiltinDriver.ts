@@ -17,7 +17,12 @@ export type JdbcxRuntimeDriverResult = {
 };
 
 export function isJdbcxRuntimePath(path: string): boolean {
-  return /(?:^|[/\\])jdbcx-(?:driver|core)(?:-|\.)/i.test(path);
+  return /(?:^|[/\\])jdbcx-driver(?:-|\.)/i.test(path);
+}
+
+function isJdbcxRuntimeBundle(bundle: JdbcMavenBundleInfo): boolean {
+  const [groupId, artifactId] = bundle.coordinate.split(":");
+  return groupId === "io.github.jdbcx" && artifactId === "jdbcx-driver";
 }
 
 export async function ensureJdbcxRuntimeDrivers(config: ConnectionConfig, api: JdbcxRuntimeDriverApi, onInstalling?: (coordinates: string[]) => void): Promise<JdbcxRuntimeDriverResult | undefined> {
@@ -33,15 +38,17 @@ export async function ensureJdbcxRuntimeDrivers(config: ConnectionConfig, api: J
   }
 
   const [bundles, installedDrivers] = await Promise.all([api.listJdbcMavenBundles(), api.listJdbcDrivers()]);
-  const installedPaths = installedDrivers.map((driver) => driver.path).filter(Boolean);
-  if (![...configuredPaths, ...installedPaths].some(isJdbcxRuntimePath)) {
+  const bundleRuntimePaths = bundles.filter(isJdbcxRuntimeBundle).flatMap((bundle) => bundle.artifacts.map((artifact) => artifact.path).filter(Boolean));
+  const standaloneRuntimePaths = installedDrivers.filter((driver) => !driver.bundle_id && isJdbcxRuntimePath(driver.path)).map((driver) => driver.path);
+  const runtimePaths = Array.from(new Set([...bundleRuntimePaths, ...standaloneRuntimePaths]));
+  const paths = Array.from(new Set([...configuredPaths, ...runtimePaths]));
+  if (!paths.some(isJdbcxRuntimePath)) {
     throw new Error("JDBCX runtime is not installed. Install io.github.jdbcx:jdbcx-driver:<version> in Driver Store, then retry.");
   }
 
   // JDBCX discovers the delegate driver through JDBC ServiceLoader/Driver.acceptsURL.
-  // Supplying the DBX driver-store classpath keeps this vendor-neutral: any Maven
-  // bundle or local JAR imported by the user becomes available without URL-specific code.
-  const paths = Array.from(new Set(installedPaths));
-  config.jdbc_driver_paths = Array.from(new Set([...configuredPaths, ...paths]));
+  // Keep the classpath scoped to the connection-selected vendor driver and the
+  // JDBCX runtime so unrelated driver dependencies cannot conflict.
+  config.jdbc_driver_paths = paths;
   return { bundles, paths };
 }

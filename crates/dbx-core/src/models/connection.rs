@@ -1909,14 +1909,22 @@ fn jdbc_transport_rest(url: &str) -> Option<&str> {
     }
 
     let rest = url.strip_prefix("jdbcx:").or_else(|| url.strip_prefix("JDBCX:"))?;
-    let (first, tail) = rest.split_once(':').unwrap_or((rest, ""));
-    if matches!(
-        first.to_ascii_lowercase().as_str(),
-        "codeql" | "graphql" | "prompt" | "prql" | "rest" | "script" | "shell" | "sql"
-    ) {
-        Some(tail)
-    } else {
-        Some(rest)
+    if let Some(scheme_end) = rest.find("://") {
+        let scheme = &rest[..scheme_end];
+        return Some(match scheme.rfind(':') {
+            Some(extension_end) => &rest[extension_end + 1..],
+            None => rest,
+        });
+    }
+
+    // Oracle's descriptor and thin URL forms do not contain `://`. In an
+    // extended JDBCX URL the vendor transport follows the first colon.
+    let tail = rest.split_once(':').map(|(_, tail)| tail);
+    match tail {
+        Some(tail) if tail.get(.."oracle:".len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case("oracle:")) => {
+            Some(tail)
+        }
+        _ => Some(rest),
     }
 }
 
@@ -3161,6 +3169,10 @@ mod tests {
             super::parse_jdbc_host_port("jdbcx:prql:postgresql://pg.example.com:5432/app"),
             Some(("pg.example.com".to_string(), 5432))
         );
+        assert_eq!(
+            super::parse_jdbc_host_port("jdbcx:query:sqlserver://sql.example.com:1433;databaseName=app"),
+            Some(("sql.example.com".to_string(), 1433))
+        );
     }
 
     #[test]
@@ -3241,15 +3253,19 @@ mod tests {
         let url = "jdbcx:script:mysql://db.example.com:3306/app";
         let rewritten = super::rewrite_jdbc_url_host(url, "127.0.0.1", 13306);
         assert_eq!(rewritten, "jdbcx:script:mysql://127.0.0.1:13306/app");
+
+        let sqlserver = "jdbcx:query:sqlserver://sql.example.com:1433;databaseName=app";
+        let rewritten = super::rewrite_jdbc_url_host(sqlserver, "127.0.0.1", 11433);
+        assert_eq!(rewritten, "jdbcx:query:sqlserver://127.0.0.1:11433;databaseName=app");
     }
 
     #[test]
     fn rewrite_jdbcx_oracle_descriptor() {
-        let url = "jdbcx:sql:oracle:thin:@(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=orahost)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=orcl)))";
+        let url = "jdbcx:web:oracle:thin:@(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=orahost)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=orcl)))";
         let rewritten = super::rewrite_jdbc_url_host(url, "127.0.0.1", 11521);
         assert_eq!(
             rewritten,
-            "jdbcx:sql:oracle:thin:@(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=127.0.0.1)(PORT=11521))(CONNECT_DATA=(SERVICE_NAME=orcl)))"
+            "jdbcx:web:oracle:thin:@(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=127.0.0.1)(PORT=11521))(CONNECT_DATA=(SERVICE_NAME=orcl)))"
         );
     }
 

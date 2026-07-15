@@ -1942,7 +1942,6 @@ const dbOptions: DbOption[] = [
   { value: "nacos", label: "Nacos" },
   { value: "influxdb", label: "InfluxDB" },
   { value: "iris", label: "IRIS" },
-  { value: "jdbc", label: "JDBC" },
   { value: "jdbcx", label: "JDBCX" },
   { value: "manticoresearch", label: "Manticore Search" },
   { value: "custom_mysql", label: "Custom (MySQL)" },
@@ -3658,13 +3657,11 @@ async function save() {
     if (editingId.value) {
       const updated = withSavedDatabaseInfo(connectionConfigForSubmit(editingId.value), databaseInfoForSave);
       await ensureRequiredAgentDriverInstalled(updated);
-      await ensureRequiredJdbcxDriverInstalled(updated);
       await store.updateConnection(updated);
       store.stopEditing();
     } else {
       const config = withSavedDatabaseInfo(connectionConfigForSubmit(draftTestConnectionId.value), databaseInfoForSave);
       await ensureRequiredAgentDriverInstalled(config);
-      await ensureRequiredJdbcxDriverInstalled(config);
       await store.addConnection(config);
       draftTestConnectionId.value = uuid();
       if (config.db_type === "jdbc") {
