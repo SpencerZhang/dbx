@@ -1905,7 +1905,7 @@ async function openExternalUrl(url: string) {
                     </div>
                   </div>
                 </div>
-                <div v-if="isGenerating && msg === messages[messages.length - 1]" class="whitespace-pre-wrap break-words text-sm leading-relaxed">{{ msg.content }}</div>
+                <div v-if="isGenerating && msg === messages[messages.length - 1]" class="whitespace-pre-wrap break-words leading-relaxed">{{ msg.content }}</div>
                 <template v-else v-for="(seg, j) in messageRenderer.render(msg.content)" :key="j">
                   <div v-if="seg.type === 'text'" class="ai-markdown whitespace-normal" @click.capture="onMarkdownClick">
                     <div v-html="seg.html" />
