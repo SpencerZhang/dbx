@@ -1062,6 +1062,30 @@ final class DbxJdbcPluginTest {
     }
 
     @Test
+    void kingbaseListTablesAvoidsPrivilegedSpaceFunctions() throws Exception {
+        Method method = DbxJdbcPlugin.class.getDeclaredMethod("kingbaseListTables", Connection.class, String.class, boolean.class);
+        method.setAccessible(true);
+        List<String> sql = new ArrayList<>();
+        ResultSet tables = rowsResultSet(
+            new String[] { "table_name", "table_type", "remarks" },
+            new Object[][] {
+                { "orders", "TABLE", "Order records" },
+                { "order_summary", "VIEW", null }
+            }
+        );
+
+        JsonNode result = (JsonNode) method.invoke(null, preparedQueryConnection(sql, tables), "APP", false);
+
+        assertEquals("orders", result.path(0).path("name").asText());
+        assertEquals("TABLE", result.path(0).path("table_type").asText());
+        assertEquals("Order records", result.path(0).path("comment").asText());
+        assertEquals("VIEW", result.path(1).path("table_type").asText());
+        assertEquals(true, sql.get(0).contains("FROM sys_catalog.sys_class"));
+        assertEquals(false, sql.get(0).contains("sys_freespace"));
+        assertEquals(false, sql.get(0).contains("pg_relation_size_ex"));
+    }
+
+    @Test
     void columnIsNullablePrefersIsNullableStringWhenNullableCodeIsWrong() throws Exception {
         Method method = DbxJdbcPlugin.class.getDeclaredMethod("columnIsNullable", ResultSet.class);
         method.setAccessible(true);
@@ -1440,6 +1464,22 @@ final class DbxJdbcPluginTest {
             (proxy, method, args) -> switch (method.getName()) {
                 case "createStatement" -> {
                     yield statement(sql, index[0]++ == 0 ? primaryKeys : columns);
+                }
+                case "isClosed" -> false;
+                case "close" -> null;
+                default -> defaultValue(method.getReturnType());
+            }
+        );
+    }
+
+    private static Connection preparedQueryConnection(List<String> sql, ResultSet rs) {
+        return (Connection) Proxy.newProxyInstance(
+            DbxJdbcPluginTest.class.getClassLoader(),
+            new Class<?>[] { Connection.class },
+            (proxy, method, args) -> switch (method.getName()) {
+                case "prepareStatement" -> {
+                    sql.add(String.valueOf(args[0]));
+                    yield preparedStatement(rs);
                 }
                 case "isClosed" -> false;
                 case "close" -> null;

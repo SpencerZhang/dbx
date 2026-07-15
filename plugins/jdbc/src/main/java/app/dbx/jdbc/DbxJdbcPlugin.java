@@ -1319,6 +1319,17 @@ public final class DbxJdbcPlugin {
         if (usePrestoInformationSchemaTables(connection)) {
             return prestoListTables(conn, database, schema, filter, limit, offset, objectTypes);
         }
+        if (isKingbaseUrl(optionalText(connection, "connection_string"))) {
+            return filterMetadataNodes(
+                (ArrayNode) kingbaseListTables(conn, schema, false),
+                filter,
+                limit,
+                offset,
+                objectTypes,
+                "table_type",
+                true
+            );
+        }
         DatabaseMetaData meta = conn.getMetaData();
         String[] types = constrainedJdbcTableTypes(jdbcTableTypes(meta), objectTypes);
         if (types.length == 0) {
@@ -1358,16 +1369,22 @@ public final class DbxJdbcPlugin {
         if (usePrestoInformationSchemaTables(connection)) {
             return prestoListObjects(conn, database, schema, filter, limit, offset, objectTypes);
         }
+        boolean kingbase = isKingbaseUrl(optionalText(connection, "connection_string"));
+        if (kingbase) {
+            result.addAll((ArrayNode) kingbaseListTables(conn, schema, true));
+        }
         DatabaseMetaData meta = conn.getMetaData();
         JdbcDriverQuirks quirks = driverQuirks(connection);
         String catalog = metadataCatalog(database, quirks);
         String schemaPattern = resolveSchemaPattern(meta, database, schema, quirks);
 
-        String[] tableTypes = constrainedJdbcTableTypes(jdbcTableTypes(meta), objectTypes);
-        if (tableTypes.length > 0) {
-            appendTableObjects(result, meta, catalog, schemaPattern, schema, tableTypes);
-            if (result.isEmpty() && catalog != null) {
-                appendTableObjects(result, meta, null, schemaPattern, schema, tableTypes);
+        if (!kingbase) {
+            String[] tableTypes = constrainedJdbcTableTypes(jdbcTableTypes(meta), objectTypes);
+            if (tableTypes.length > 0) {
+                appendTableObjects(result, meta, catalog, schemaPattern, schema, tableTypes);
+                if (result.isEmpty() && catalog != null) {
+                    appendTableObjects(result, meta, null, schemaPattern, schema, tableTypes);
+                }
             }
         }
 
@@ -1878,6 +1895,42 @@ public final class DbxJdbcPlugin {
             case "VIEW" -> "VIEW";
             default -> tableType;
         };
+    }
+
+    private static JsonNode kingbaseListTables(Connection conn, String schema, boolean objectNodes) throws SQLException {
+        ArrayNode result = MAPPER.createArrayNode();
+        String effectiveSchema = emptyToNull(schema) == null ? "PUBLIC" : schema;
+        String sql = "SELECT c.relname AS table_name, " +
+            "CASE c.relkind " +
+            "WHEN 'r' THEN 'TABLE' " +
+            "WHEN 'p' THEN 'TABLE' " +
+            "WHEN 'v' THEN 'VIEW' " +
+            "WHEN 'm' THEN 'MATERIALIZED VIEW' " +
+            "WHEN 'f' THEN 'FOREIGN TABLE' " +
+            "END AS table_type, d.description AS remarks " +
+            "FROM sys_catalog.sys_class c " +
+            "JOIN sys_catalog.sys_namespace n ON n.oid = c.relnamespace " +
+            "LEFT JOIN sys_catalog.sys_description d ON d.objoid = c.oid AND d.objsubid = 0 " +
+            "WHERE n.nspname = ? AND c.relkind IN ('r', 'p', 'v', 'm', 'f') " +
+            "ORDER BY c.relname";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, effectiveSchema);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    ObjectNode item = MAPPER.createObjectNode();
+                    item.put("name", rs.getString("table_name"));
+                    if (objectNodes) {
+                        item.put("object_type", rs.getString("table_type"));
+                        item.put("schema", effectiveSchema);
+                    } else {
+                        item.put("table_type", rs.getString("table_type"));
+                    }
+                    putNullable(item, "comment", rs.getString("remarks"));
+                    result.add(item);
+                }
+            }
+        }
+        return result;
     }
 
     private static JsonNode kingbaseGetColumns(Connection conn, String schema, String table) throws SQLException {
