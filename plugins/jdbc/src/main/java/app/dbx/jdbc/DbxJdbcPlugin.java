@@ -1899,26 +1899,30 @@ public final class DbxJdbcPlugin {
 
     private static JsonNode kingbaseListTables(Connection conn, String schema, boolean objectNodes) throws SQLException {
         ArrayNode result = MAPPER.createArrayNode();
-        String effectiveSchema = emptyToNull(schema) == null ? "PUBLIC" : schema;
-        String sql = "SELECT c.relname AS table_name, " +
-            "CASE c.relkind " +
-            "WHEN 'r' THEN 'TABLE' " +
-            "WHEN 'p' THEN 'TABLE' " +
-            "WHEN 'v' THEN 'VIEW' " +
-            "WHEN 'm' THEN 'MATERIALIZED VIEW' " +
-            "WHEN 'f' THEN 'FOREIGN TABLE' " +
-            "END AS table_type, d.description AS remarks " +
-            "FROM sys_catalog.sys_class c " +
-            "JOIN sys_catalog.sys_namespace n ON n.oid = c.relnamespace " +
-            "LEFT JOIN sys_catalog.sys_description d ON d.objoid = c.oid AND d.objsubid = 0 " +
-            "WHERE n.nspname = ? AND c.relkind IN ('r', 'p', 'v', 'm', 'f') " +
-            "ORDER BY c.relname";
+        String effectiveSchema = kingbaseEffectiveSchema(conn, schema);
+        String sql = """
+            SELECT c.relname AS table_name,
+                CASE c.relkind
+                    WHEN 'r' THEN 'TABLE'
+                    WHEN 'p' THEN 'TABLE'
+                    WHEN 'v' THEN 'VIEW'
+                    WHEN 'm' THEN 'MATERIALIZED VIEW'
+                    WHEN 'f' THEN 'FOREIGN TABLE'
+                END AS table_type,
+                d.description AS remarks
+            FROM sys_catalog.sys_class c
+            JOIN sys_catalog.sys_namespace n ON n.oid = c.relnamespace
+            LEFT JOIN sys_catalog.sys_description d ON d.objoid = c.oid AND d.objsubid = 0
+            WHERE n.nspname = ? AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+            ORDER BY c.relname
+            """;
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, effectiveSchema);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
+                    String tableName = rs.getString("table_name");
                     ObjectNode item = MAPPER.createObjectNode();
-                    item.put("name", rs.getString("table_name"));
+                    item.put("name", tableName);
                     if (objectNodes) {
                         item.put("object_type", rs.getString("table_type"));
                         item.put("schema", effectiveSchema);
@@ -1933,9 +1937,21 @@ public final class DbxJdbcPlugin {
         return result;
     }
 
+    private static String kingbaseEffectiveSchema(Connection conn, String schema) {
+        String effectiveSchema = emptyToNull(schema);
+        if (effectiveSchema != null) {
+            return effectiveSchema;
+        }
+        try {
+            effectiveSchema = emptyToNull(conn.getSchema());
+        } catch (SQLException | AbstractMethodError | UnsupportedOperationException ignored) {
+        }
+        return effectiveSchema == null ? "PUBLIC" : effectiveSchema;
+    }
+
     private static JsonNode kingbaseGetColumns(Connection conn, String schema, String table) throws SQLException {
         ArrayNode result = MAPPER.createArrayNode();
-        String effectiveSchema = emptyToNull(schema) == null ? "PUBLIC" : schema;
+        String effectiveSchema = kingbaseEffectiveSchema(conn, schema);
         Set<String> primaryKeys = kingbasePrimaryKeys(conn, effectiveSchema, table);
         String sql = "SELECT a.attname AS column_name, " +
             "format_type(a.atttypid, a.atttypmod) AS data_type, " +

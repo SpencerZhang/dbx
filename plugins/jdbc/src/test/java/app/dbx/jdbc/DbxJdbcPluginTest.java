@@ -1086,6 +1086,23 @@ final class DbxJdbcPluginTest {
     }
 
     @Test
+    void kingbaseEffectiveSchemaPreservesConnectionSchemaCase() throws Exception {
+        Method method = DbxJdbcPlugin.class.getDeclaredMethod("kingbaseEffectiveSchema", Connection.class, String.class);
+        method.setAccessible(true);
+        Connection connection = (Connection) Proxy.newProxyInstance(
+            DbxJdbcPluginTest.class.getClassLoader(),
+            new Class<?>[] { Connection.class },
+            (proxy, invokedMethod, args) -> switch (invokedMethod.getName()) {
+                case "getSchema" -> "CaseSensitiveSchema";
+                default -> defaultValue(invokedMethod.getReturnType());
+            }
+        );
+
+        assertEquals("CaseSensitiveSchema", method.invoke(null, connection, null));
+        assertEquals("ExplicitSchema", method.invoke(null, connection, "ExplicitSchema"));
+    }
+
+    @Test
     void columnIsNullablePrefersIsNullableStringWhenNullableCodeIsWrong() throws Exception {
         Method method = DbxJdbcPlugin.class.getDeclaredMethod("columnIsNullable", ResultSet.class);
         method.setAccessible(true);
