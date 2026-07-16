@@ -1062,7 +1062,7 @@ final class DbxJdbcPluginTest {
     }
 
     @Test
-    void kingbaseListTablesAvoidsPrivilegedSpaceFunctions() throws Exception {
+    void kingbaseListTablesReusesCastSafeAgentDiscovery() throws Exception {
         Method method = DbxJdbcPlugin.class.getDeclaredMethod("kingbaseListTables", Connection.class, String.class, boolean.class);
         method.setAccessible(true);
         List<String> sql = new ArrayList<>();
@@ -1074,15 +1074,40 @@ final class DbxJdbcPluginTest {
             }
         );
 
-        JsonNode result = (JsonNode) method.invoke(null, preparedQueryConnection(sql, tables), "APP", false);
+        JsonNode result = (JsonNode) method.invoke(null, kingbaseTableConnection(sql, tables, false), "APP", false);
 
         assertEquals("orders", result.path(0).path("name").asText());
         assertEquals("TABLE", result.path(0).path("table_type").asText());
         assertEquals("Order records", result.path(0).path("comment").asText());
         assertEquals("VIEW", result.path(1).path("table_type").asText());
-        assertEquals(true, sql.get(0).contains("FROM sys_catalog.sys_class"));
-        assertEquals(false, sql.get(0).contains("sys_freespace"));
-        assertEquals(false, sql.get(0).contains("pg_relation_size_ex"));
+        String discoverySql = sql.get(2);
+        assertEquals(true, discoverySql.contains("FROM sys_catalog.sys_class"));
+        assertEquals(true, discoverySql.contains("FROM sys_catalog.sys_views"));
+        assertEquals(true, discoverySql.contains("FROM sys_catalog.sys_matviews"));
+        assertEquals(true, discoverySql.contains("CAST(c.relname AS varchar(256))"));
+        assertEquals(false, discoverySql.contains("relkind"));
+        assertEquals(false, discoverySql.contains("sys_freespace"));
+        assertEquals(false, discoverySql.contains("pg_relation_size_ex"));
+    }
+
+    @Test
+    void kingbaseCompatibilityListTablesAvoidsRelkind() throws Exception {
+        Method method = DbxJdbcPlugin.class.getDeclaredMethod("kingbaseListTables", Connection.class, String.class, boolean.class);
+        method.setAccessible(true);
+        List<String> sql = new ArrayList<>();
+        ResultSet tables = rowsResultSet(
+            new String[] { "table_name", "table_type", "remarks" },
+            new Object[][] { { "orders", "BASE TABLE", null }, { "order_summary", "VIEW", null } }
+        );
+
+        JsonNode result = (JsonNode) method.invoke(null, kingbaseTableConnection(sql, tables, true), "APP", false);
+
+        assertEquals("TABLE", result.path(0).path("table_type").asText());
+        assertEquals("VIEW", result.path(1).path("table_type").asText());
+        String discoverySql = sql.get(2);
+        assertEquals(true, discoverySql.contains("FROM information_schema.tables"));
+        assertEquals(false, discoverySql.contains("relkind"));
+        assertEquals(false, discoverySql.contains("sys_freespace"));
     }
 
     @Test
@@ -1489,16 +1514,42 @@ final class DbxJdbcPluginTest {
         );
     }
 
-    private static Connection preparedQueryConnection(List<String> sql, ResultSet rs) {
+    private static Connection kingbaseTableConnection(List<String> sql, ResultSet rs, boolean compatibilityMode) {
         return (Connection) Proxy.newProxyInstance(
             DbxJdbcPluginTest.class.getClassLoader(),
             new Class<?>[] { Connection.class },
             (proxy, method, args) -> switch (method.getName()) {
+                case "createStatement" -> kingbaseCatalogProbeStatement(sql, compatibilityMode);
                 case "prepareStatement" -> {
                     sql.add(String.valueOf(args[0]));
                     yield preparedStatement(rs);
                 }
                 case "isClosed" -> false;
+                case "close" -> null;
+                default -> defaultValue(method.getReturnType());
+            }
+        );
+    }
+
+    private static Statement kingbaseCatalogProbeStatement(List<String> sql, boolean compatibilityMode) {
+        return (Statement) Proxy.newProxyInstance(
+            DbxJdbcPluginTest.class.getClassLoader(),
+            new Class<?>[] { Statement.class },
+            (proxy, method, args) -> switch (method.getName()) {
+                case "executeQuery" -> {
+                    String query = String.valueOf(args[0]);
+                    sql.add(query);
+                    if (query.contains("sys_catalog.sys_namespace")) {
+                        yield rowsResultSet(new String[] { "exists" }, new Object[0][]);
+                    }
+                    if (query.contains("sys_settings")) {
+                        yield rowsResultSet(
+                            new String[] { "exists" },
+                            compatibilityMode ? new Object[][] { { 1 } } : new Object[0][]
+                        );
+                    }
+                    throw new SQLException("Unexpected Kingbase catalog probe: " + query);
+                }
                 case "close" -> null;
                 default -> defaultValue(method.getReturnType());
             }
