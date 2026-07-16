@@ -40,7 +40,7 @@ import { copyToClipboard } from "@/lib/common/clipboard";
 import { configuredDatabaseProductName, connectionConfigFingerprint, databaseInfoCopyText, databaseInfoRows, normalizeDatabaseConnectionInfo, type DatabaseInfoField } from "@/lib/connection/connectionDatabaseInfo";
 import { agentDriverInstallKey, appendAgentDriverUpdateHint, hasAgentDriverUpdate, showAgentDriverInstallHint, type AgentDriverInstallState, type DriverStoreFocus } from "@/lib/connection/agentDriverInstallHint";
 import { prestoSqlBuiltinDriverPaths } from "@/lib/database/prestoSqlBuiltinDriver";
-import { JDBCX_DEFAULT_URL, JDBCX_DRIVER_PROFILE, JDBCX_JDBC_DRIVER_CLASS, ensureJdbcxRuntimeDrivers } from "@/lib/database/jdbcxBuiltinDriver";
+import { JDBCX_DEFAULT_URL, JDBCX_DRIVER_PROFILE, JDBCX_JDBC_DRIVER_CLASS, ensureJdbcxRuntimeDrivers, isJdbcxRuntimeBundle, isJdbcxRuntimePath, jdbcxHighPrivilegeExtensionsEnabled, setJdbcxHighPrivilegeExtensionsEnabled } from "@/lib/database/jdbcxBuiltinDriver";
 import { SQLITE_DATABASE_FILE_EXTENSIONS } from "@/lib/database/databaseFileDetection";
 import { connectionAttemptOriginalErrorMessage, connectionAttemptTimeoutMessage, connectionAttemptTimeoutMs } from "@/lib/connection/connectionAttemptTimeout";
 import { appendConnectionErrorHints } from "@/lib/connection/connectionErrorHints";
@@ -100,6 +100,7 @@ type JdbcDriverSelectItem = {
   id: string;
   label: string;
   paths: string[];
+  jdbcxRuntime: boolean;
 };
 
 const DREMIO_ARROW_FLIGHT_SQL_JDBC_URL = "jdbc:arrow-flight-sql://127.0.0.1:32010";
@@ -548,11 +549,13 @@ const jdbcDriverSelectItems = computed<JdbcDriverSelectItem[]>(() => {
     id: `local:${bundle.id}`,
     label: bundle.name,
     paths: bundle.artifacts.map((artifact) => artifact.path),
+    jdbcxRuntime: bundle.artifacts.some((artifact) => isJdbcxRuntimePath(artifact.path)),
   }));
   const bundles = jdbcMavenBundles.value.map((bundle) => ({
     id: `maven:${bundle.id}`,
     label: bundle.coordinate,
     paths: bundle.artifacts.map((artifact) => artifact.path),
+    jdbcxRuntime: isJdbcxRuntimeBundle(bundle),
   }));
   const manual = jdbcDrivers.value
     .filter((driver) => !driver.bundle_id)
@@ -560,6 +563,7 @@ const jdbcDriverSelectItems = computed<JdbcDriverSelectItem[]>(() => {
       id: `manual:${driver.path}`,
       label: driver.name,
       paths: [driver.path],
+      jdbcxRuntime: isJdbcxRuntimePath(driver.path),
     }));
   return [...localBundles, ...bundles, ...manual].sort((left, right) => left.label.localeCompare(right.label));
 });
@@ -1209,7 +1213,7 @@ async function ensureRequiredJdbcxDriverInstalled(config: ConnectionConfig): Pro
   jdbcMavenBundles.value = result.bundles;
   addJdbcDriverPaths(result.paths);
   form.value.jdbc_driver_paths = [...(config.jdbc_driver_paths ?? [])];
-  selectedJdbcDriverPath.value = result.paths.length > 0 ? (jdbcDriverSelectItems.value.find((item) => result.paths.every((path) => item.paths.includes(path)))?.id ?? "") : "";
+  selectedJdbcDriverPath.value = result.runtimeSelectionId;
   if (result.paths.length > 0) {
     jdbcManualClasspathOpen.value = false;
   }
@@ -1976,6 +1980,14 @@ const hasDbPickerResults = computed(() => filteredDbCategories.value.some((categ
 const selectedDbIcon = computed(() => iconTypeMap[selectedType.value] || selectedProfile().icon || selectedType.value);
 const jdbcBackedDatabaseTypes = new Set<DatabaseType>(["jdbc", "prestosql"]);
 const isJdbcConnection = computed(() => form.value.db_type === "jdbc");
+const isJdbcxConnection = computed(() => isJdbcConnection.value && form.value.driver_profile === JDBCX_DRIVER_PROFILE);
+const jdbcxHighPrivilegeExtensionsAllowed = computed({
+  get: () => jdbcxHighPrivilegeExtensionsEnabled(form.value),
+  set: (enabled: boolean) => {
+    setJdbcxHighPrivilegeExtensionsEnabled(form.value, enabled);
+    resetTestState();
+  },
+});
 const isPrestoSqlConnection = computed(() => form.value.db_type === "prestosql");
 const isH2FileMode = computed(() => form.value.db_type === "h2" && h2ConnectionMode.value === "file");
 const usesLocalFilePathInput = computed(() => isLocalFileTypeDb(form.value.db_type) && (form.value.db_type !== "h2" || isH2FileMode.value));
@@ -2570,7 +2582,7 @@ function connectionConfigForSubmit(id: string, generatedName = ""): ConnectionCo
     });
     config.url_params = hiveKerberos.urlParams;
     config.agent_java_options = hiveKerberos.agentJavaOptions;
-  } else {
+  } else if (!(config.db_type === "jdbc" && config.driver_profile === JDBCX_DRIVER_PROFILE)) {
     config.agent_java_options = undefined;
   }
   if (config.db_type === "informix" && config.informix_server) {
@@ -4006,7 +4018,16 @@ function onJdbcDriverSelect(id: any) {
   const item = jdbcDriverSelectItemById.value.get(id);
   if (!item) return;
   selectedJdbcDriverPath.value = id;
-  addJdbcDriverPaths(item.paths);
+  if (isJdbcxConnection.value && item.jdbcxRuntime) {
+    const installedJdbcxRuntimePaths = new Set(jdbcDriverSelectItems.value.filter((candidate) => candidate.jdbcxRuntime).flatMap((candidate) => candidate.paths));
+    const existingPaths = jdbcDriverPathsInput.value
+      .split(/\r?\n/)
+      .map((path) => path.trim())
+      .filter((path) => path && !installedJdbcxRuntimePaths.has(path));
+    jdbcDriverPathsInput.value = Array.from(new Set([...existingPaths, ...item.paths])).join("\n");
+  } else {
+    addJdbcDriverPaths(item.paths);
+  }
   jdbcManualClasspathOpen.value = false;
 }
 
@@ -4282,6 +4303,16 @@ function openExternalUrl(url: string) {
                   <div class="grid grid-cols-4 items-center gap-4">
                     <Label :class="connectionLabelClass">{{ t("connection.jdbcUrl") }}</Label>
                     <Input v-model="form.connection_string" class="col-span-3" :placeholder="t('connection.jdbcUrlPlaceholder')" @blur="syncDremioConnectionModeFromUrl" />
+                  </div>
+                  <div v-if="isJdbcxConnection" class="grid grid-cols-4 items-start gap-4">
+                    <Label :class="connectionLabelTopClass">{{ t("connection.jdbcxExtensions") }}</Label>
+                    <div class="col-span-3 flex items-start justify-between gap-4 rounded-md border px-3 py-2" :class="jdbcxHighPrivilegeExtensionsAllowed ? 'border-amber-500/60 bg-amber-500/10' : 'bg-muted/20'">
+                      <div class="space-y-1">
+                        <div class="text-sm font-medium">{{ t("connection.jdbcxHighPrivilegeExtensions") }}</div>
+                        <p class="text-xs text-muted-foreground">{{ t("connection.jdbcxHighPrivilegeExtensionsWarning") }}</p>
+                      </div>
+                      <Switch v-model="jdbcxHighPrivilegeExtensionsAllowed" class="mt-0.5 shrink-0" />
+                    </div>
                   </div>
                   <div class="grid grid-cols-4 items-center gap-4">
                     <Label :class="connectionLabelClass">{{ t("connection.user") }}</Label>

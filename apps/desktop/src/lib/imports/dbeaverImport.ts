@@ -72,6 +72,7 @@ function getNumber(value: unknown) {
 }
 
 function inferProfile(entry: DbeaverConnectionEntry): ConnectionProfile {
+  if (/^jdbcx:/i.test(getString(entry.configuration?.url))) return profileMap.jdbcx;
   const driverProfile = profileMap[normalizeKey(entry.driver)];
   if (driverProfile) return driverProfile;
   const candidates = [entry.provider, entry.driver, entry.configuration?.url, entry.name].map(normalizeKey).join(" ");
