@@ -57,6 +57,7 @@ import { useSettingsStore } from "@/stores/settingsStore";
 import { useSavedSqlStore } from "@/stores/savedSqlStore";
 import { recordQueryCancellationLatency, resourceLifecycleDiagnostics } from "@/lib/diagnostics/resourceLifecycleDiagnostics";
 import { appendDebugLog } from "@/lib/backend/debugLog";
+import { formatError } from "@/lib/backend/errorUtils";
 import { createSavedSqlEditorPosition, initSavedSqlEditorPositions, restoreSavedSqlEditorPosition, saveSavedSqlEditorPosition } from "@/lib/app/savedSqlEditorPosition";
 import { ensureSqlExtension } from "@/lib/savedSql/savedSqlFileName";
 import { safeLocalStorageGet, safeLocalStorageRemove } from "@/lib/backend/safeStorage";
@@ -3598,7 +3599,8 @@ export const useQueryStore = defineStore("query", () => {
         const current = tabs.value.find((t) => t.id === id);
         if (current?.explainExecutionId === executionId) {
           current.explainPlan = undefined;
-          current.explainError = String(e?.message || e);
+          // Backend rejections contain the real ORA/Agent diagnostic; only successful empty responses use the generic empty-plan message.
+          current.explainError = formatError(e);
         }
       } finally {
         const current = tabs.value.find((t) => t.id === id);

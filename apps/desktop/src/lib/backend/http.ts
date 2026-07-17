@@ -810,12 +810,8 @@ export async function buildCreateUserSql(username: string, password: string, tab
 }
 
 export async function getExplainInfo(connectionId: string, database: string | undefined, schema: string | undefined, sql: string, mode: string): Promise<string | undefined> {
-  try {
-    const result = await post<string>("/api/query/get-explain-info", { connectionId, database, schema, sql, mode });
-    return result;
-  } catch {
-    return undefined;
-  }
+  // Match the Tauri path: transport and Agent failures must remain distinguishable from an empty plan.
+  return post<string>("/api/query/get-explain-info", { connectionId, database, schema, sql, mode });
 }
 
 export async function buildDroppedFilePreviewSql(options: DroppedFilePreviewSqlOptions): Promise<string | undefined> {

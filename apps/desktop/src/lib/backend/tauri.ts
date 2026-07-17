@@ -901,13 +901,8 @@ export async function buildCreateUserSql(username: string, password: string, tab
 }
 
 export async function getExplainInfo(connectionId: string, database: string | undefined, schema: string | undefined, sql: string, mode: string): Promise<string | undefined> {
-  try {
-    const result = await invoke<string>("get_explain_info", { connectionId, database, schema, sql, mode });
-    return result;
-  } catch (e: any) {
-    console.error("[getExplainInfo] invoke failed:", e?.message || e);
-    return undefined;
-  }
+  // Preserve Agent/driver errors so the explain view can show the actionable cause.
+  return invoke<string>("get_explain_info", { connectionId, database, schema, sql, mode });
 }
 
 export async function buildDroppedFilePreviewSql(options: DroppedFilePreviewSqlOptions): Promise<string | undefined> {
