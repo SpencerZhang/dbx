@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ensureJdbcxRuntimeDrivers, isJdbcxRuntimePath, jdbcxHighPrivilegeExtensionsEnabled, setJdbcxHighPrivilegeExtensionsEnabled } from "@/lib/database/jdbcxBuiltinDriver";
+import { JDBCX_HIGH_PRIVILEGE_EXTENSIONS_JAVA_OPTION, ensureJdbcxRuntimeDrivers, isJdbcxRuntimePath, jdbcxHighPrivilegeExtensionsEnabled, setJdbcxHighPrivilegeExtensionsEnabled } from "@/lib/database/jdbcxBuiltinDriver";
 import type { ConnectionConfig, JdbcMavenBundleInfo } from "@/types/database";
 
 function jdbcxConfig(): ConnectionConfig {
@@ -35,6 +35,21 @@ describe("jdbcxBuiltinDriver", () => {
     setJdbcxHighPrivilegeExtensionsEnabled(config, true);
     expect(jdbcxHighPrivilegeExtensionsEnabled(config)).toBe(true);
     setJdbcxHighPrivilegeExtensionsEnabled(config, false);
+    expect(jdbcxHighPrivilegeExtensionsEnabled(config)).toBe(false);
+  });
+
+  it("canonicalizes whitespace-padded legacy opt-ins across edit round trips", () => {
+    const config = jdbcxConfig();
+    config.agent_java_options = [" -Ddbx.jdbcx.allowHighPrivilegeExtensions=false ", "-Xmx512m", "\t-Ddbx.jdbcx.allowHighPrivilegeExtensions=true\t"];
+
+    expect(jdbcxHighPrivilegeExtensionsEnabled(config)).toBe(true);
+
+    setJdbcxHighPrivilegeExtensionsEnabled(config, true);
+    expect(config.agent_java_options).toEqual(["-Xmx512m", JDBCX_HIGH_PRIVILEGE_EXTENSIONS_JAVA_OPTION]);
+    expect(jdbcxHighPrivilegeExtensionsEnabled(config)).toBe(true);
+
+    setJdbcxHighPrivilegeExtensionsEnabled(config, false);
+    expect(config.agent_java_options).toEqual(["-Xmx512m"]);
     expect(jdbcxHighPrivilegeExtensionsEnabled(config)).toBe(false);
   });
 

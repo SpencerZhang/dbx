@@ -4,6 +4,7 @@ export const JDBCX_DRIVER_PROFILE = "jdbcx";
 export const JDBCX_JDBC_DRIVER_CLASS = "io.github.jdbcx.WrappedDriver";
 export const JDBCX_DEFAULT_URL = "jdbcx:";
 export const JDBCX_HIGH_PRIVILEGE_EXTENSIONS_JAVA_OPTION = "-Ddbx.jdbcx.allowHighPrivilegeExtensions=true";
+const JDBCX_HIGH_PRIVILEGE_EXTENSIONS_JAVA_OPTION_PREFIX = "-Ddbx.jdbcx.allowHighPrivilegeExtensions=";
 
 export type JdbcxRuntimeDriverApi = {
   listJdbcDrivers: () => Promise<JdbcDriverInfo[]>;
@@ -34,12 +35,16 @@ export function isJdbcxRuntimeBundle(bundle: JdbcMavenBundleInfo): boolean {
 }
 
 export function jdbcxHighPrivilegeExtensionsEnabled(config: Pick<ConnectionConfig, "agent_java_options">): boolean {
-  const option = [...(config.agent_java_options ?? [])].reverse().find((value) => value.startsWith("-Ddbx.jdbcx.allowHighPrivilegeExtensions="));
+  const option = [...(config.agent_java_options ?? [])]
+    .reverse()
+    .map((value) => value.trim())
+    .find((value) => value.startsWith(JDBCX_HIGH_PRIVILEGE_EXTENSIONS_JAVA_OPTION_PREFIX));
   return option?.slice(option.indexOf("=") + 1).toLowerCase() === "true";
 }
 
 export function setJdbcxHighPrivilegeExtensionsEnabled(config: Pick<ConnectionConfig, "agent_java_options">, enabled: boolean): void {
-  const options = (config.agent_java_options ?? []).filter((option) => !option.startsWith("-Ddbx.jdbcx.allowHighPrivilegeExtensions="));
+  // Canonicalize this DBX-owned option so legacy whitespace cannot diverge from backend parsing.
+  const options = (config.agent_java_options ?? []).filter((option) => !option.trim().startsWith(JDBCX_HIGH_PRIVILEGE_EXTENSIONS_JAVA_OPTION_PREFIX));
   config.agent_java_options = enabled ? [...options, JDBCX_HIGH_PRIVILEGE_EXTENSIONS_JAVA_OPTION] : options;
 }
 
