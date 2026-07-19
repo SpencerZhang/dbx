@@ -1900,11 +1900,15 @@ public final class DbxJdbcPlugin {
     private static JsonNode kingbaseListTables(Connection conn, String schema, boolean objectNodes) throws SQLException {
         ArrayNode result = MAPPER.createArrayNode();
         String effectiveSchema = kingbaseEffectiveSchema(conn, schema);
-        boolean compatibilityMode = kingbaseUsesInformationSchemaTables(conn);
-        String sql = compatibilityMode ? kingbaseCompatibilityTablesSql() : kingbaseCastSafeTablesSql();
+        KingbaseTableCatalogMode catalogMode = kingbaseTableCatalogMode(conn);
+        String sql = switch (catalogMode) {
+            case SYS_CATALOG -> kingbaseCastSafeTablesSql();
+            case POSTGRES_CATALOG -> kingbasePostgresTablesSql();
+            case INFORMATION_SCHEMA -> kingbaseCompatibilityTablesSql();
+        };
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, effectiveSchema);
-            if (!compatibilityMode) {
+            if (catalogMode == KingbaseTableCatalogMode.SYS_CATALOG) {
                 ps.setString(2, effectiveSchema);
                 ps.setString(3, effectiveSchema);
             }
@@ -1928,12 +1932,38 @@ public final class DbxJdbcPlugin {
         return result;
     }
 
-    private static boolean kingbaseUsesInformationSchemaTables(Connection conn) {
+    private enum KingbaseTableCatalogMode {
+        SYS_CATALOG,
+        POSTGRES_CATALOG,
+        INFORMATION_SCHEMA
+    }
+
+    private static KingbaseTableCatalogMode kingbaseTableCatalogMode(Connection conn) {
         if (!kingbaseCatalogExists(conn, "sys_catalog.sys_namespace")) {
-            return true;
+            return kingbaseCatalogExists(conn, "pg_catalog.pg_namespace")
+                ? KingbaseTableCatalogMode.POSTGRES_CATALOG
+                : KingbaseTableCatalogMode.INFORMATION_SCHEMA;
+        }
+        return kingbaseMysqlCompatibilityMode(conn)
+            ? KingbaseTableCatalogMode.INFORMATION_SCHEMA
+            : KingbaseTableCatalogMode.SYS_CATALOG;
+    }
+
+    private static boolean kingbaseMysqlCompatibilityMode(Connection conn) {
+        try (Statement statement = conn.createStatement();
+             ResultSet rs = statement.executeQuery(
+                 "SELECT setting FROM sys_catalog.sys_settings WHERE LOWER(name) = 'database_mode'"
+             )) {
+            if (rs.next()) {
+                return "mysql".equalsIgnoreCase(rs.getString(1));
+            }
+        } catch (Exception ignored) {
+            // Older Kingbase versions do not expose database_mode.
         }
         try (Statement statement = conn.createStatement();
-             ResultSet rs = statement.executeQuery("SELECT 1 FROM sys_settings WHERE LOWER(name) = 'sql_mode'")) {
+             ResultSet rs = statement.executeQuery(
+                 "SELECT 1 FROM sys_catalog.sys_settings WHERE LOWER(name) = 'sql_mode'"
+             )) {
             return rs.next();
         } catch (Exception ignored) {
             return false;
@@ -1965,6 +1995,24 @@ public final class DbxJdbcPlugin {
             """;
     }
 
+    private static String kingbasePostgresTablesSql() {
+        return """
+            SELECT CAST(c.relname AS varchar(256)) AS table_name,
+                CASE c.relkind
+                    WHEN 'v' THEN 'VIEW'
+                    WHEN 'm' THEN 'MATERIALIZED_VIEW'
+                    WHEN 'f' THEN 'FOREIGN TABLE'
+                    ELSE 'TABLE'
+                END AS table_type,
+                CAST(obj_description(c.oid) AS varchar(4000)) AS remarks
+            FROM pg_catalog.pg_class c
+            JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = ?
+                AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+            ORDER BY c.relname
+            """;
+    }
+
     private static String kingbaseCastSafeTablesSql() {
         return """
             SELECT table_name, table_type, remarks
@@ -1978,23 +2026,16 @@ public final class DbxJdbcPlugin {
                 LEFT JOIN sys_catalog.sys_description d
                     ON CAST(d.objoid AS varchar(64)) = CAST(c.oid AS varchar(64)) AND d.objsubid = 0
                 WHERE CAST(n.nspname AS varchar(256)) = ?
-                    AND NOT EXISTS (
-                        SELECT 1 FROM sys_catalog.sys_rewrite r
-                        WHERE CAST(r.ev_class AS varchar(64)) = CAST(c.oid AS varchar(64))
-                            AND CAST(r.rulename AS varchar(256)) = '_RETURN'
-                    )
-                    AND NOT EXISTS (
-                        SELECT 1 FROM sys_catalog.sys_index ix
-                        WHERE CAST(ix.indexrelid AS varchar(64)) = CAST(c.oid AS varchar(64))
-                    )
-                    AND NOT EXISTS (
-                        SELECT 1
-                        FROM sys_catalog.sys_attribute sa1
-                        JOIN sys_catalog.sys_attribute sa2
-                            ON CAST(sa2.attrelid AS varchar(64)) = CAST(sa1.attrelid AS varchar(64))
-                        WHERE CAST(sa1.attrelid AS varchar(64)) = CAST(c.oid AS varchar(64))
-                            AND CAST(sa1.attname AS varchar(256)) = 'last_value'
-                            AND CAST(sa2.attname AS varchar(256)) = 'log_cnt'
+                    AND (
+                        EXISTS (
+                            SELECT 1 FROM sys_catalog.sys_tables t
+                            WHERE CAST(t.schemaname AS varchar(256)) = CAST(n.nspname AS varchar(256))
+                                AND CAST(t.tablename AS varchar(256)) = CAST(c.relname AS varchar(256))
+                        )
+                        OR EXISTS (
+                            SELECT 1 FROM sys_catalog.sys_foreign_table ft
+                            WHERE CAST(ft.ftrelid AS varchar(64)) = CAST(c.oid AS varchar(64))
+                        )
                     )
                 UNION ALL
                 SELECT CAST(v.viewname AS varchar(256)) AS table_name,
